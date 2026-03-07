@@ -1,0 +1,45 @@
+# Python / Django
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.mypy_cache/
+
+# Virtualenv
+venv/
+.venv/
+
+# Django local artifacts
+db.sqlite3
+*.sqlite3
+media/
+staticfiles/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Local dev helper scripts (personal shortcuts)
+start-milkman.ps1
+open-developer-window.ps1
+run-developer-window.ps1
+
+# Node / React
+node_modules/
+build/
+dist/
+.parcel-cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/ 
+
+# developer-window/
+developerIdPass.txt
+

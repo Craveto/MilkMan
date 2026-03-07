@@ -1,0 +1,247 @@
+.dev-console {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dev-console-hero {
+  background: linear-gradient(135deg, #0f766e, #1d4ed8);
+  border-radius: 14px;
+  padding: 16px 18px;
+  color: #fff;
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.dev-console-title {
+  margin: 0;
+}
+
+.dev-console-subtitle {
+  opacity: 0.9;
+  font-weight: 600;
+}
+
+.dev-console-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dev-console-tabs {
+  display: flex;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  padding: 6px;
+  border-radius: 999px;
+}
+
+.dev-console-tab {
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 800;
+  padding: 8px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  text-transform: capitalize;
+}
+
+.dev-console-tab.active {
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+}
+
+.dev-console-refresh {
+  border: none;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+  font-weight: 900;
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+
+.dev-console-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dev-console-search {
+  flex: 1 1 280px;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.dev-console-count {
+  color: #475569;
+  font-size: 0.92rem;
+}
+
+.dev-console-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dev-console-empty {
+  color: #475569;
+  padding: 12px;
+}
+
+.dev-console-card {
+  background: #fff;
+  border: 1px solid #dbe4ee;
+  border-radius: 14px;
+  padding: 12px;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.06);
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.dev-console-card-main {
+  flex: 2 1 360px;
+  min-width: 280px;
+}
+
+.dev-console-card-side {
+  flex: 1 1 280px;
+  min-width: 260px;
+}
+
+.dev-console-card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-weight: 900;
+  color: #0f172a;
+}
+
+.dev-console-pill {
+  border: 1px solid #99f6e4;
+  background: #ecfeff;
+  color: #0f766e;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-weight: 900;
+  font-size: 0.8rem;
+}
+
+.dev-console-status {
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-weight: 900;
+  font-size: 0.8rem;
+  text-transform: capitalize;
+}
+
+.dev-console-status.pending {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #9a3412;
+}
+
+.dev-console-status.approved {
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  color: #065f46;
+}
+
+.dev-console-status.rejected {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+}
+
+.dev-console-card-meta {
+  color: #475569;
+  margin-top: 6px;
+  font-size: 0.92rem;
+}
+
+.dev-console-card-section {
+  margin-top: 10px;
+}
+
+.dev-console-card-shop {
+  font-weight: 900;
+  color: #0f172a;
+}
+
+.dev-console-note {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #334155;
+  font-weight: 800;
+  font-size: 0.9rem;
+}
+
+.dev-console-note input {
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.dev-console-card-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.dev-console-btn {
+  border: none;
+  cursor: pointer;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-weight: 900;
+  color: #fff;
+}
+
+.dev-console-btn.approve {
+  background: #0f766e;
+}
+
+.dev-console-btn.reject {
+  background: #b91c1c;
+}
+
+.dev-console-result {
+  margin-top: 10px;
+  color: #475569;
+  font-size: 0.92rem;
+}
+
+.dev-console-toast {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  z-index: 50;
+  background: #0f172a;
+  color: #fff;
+  padding: 12px 14px;
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.35);
+  max-width: min(520px, calc(100vw - 36px));
+}
+
+@media (max-width: 720px) {
+  .dev-console-toast {
+    left: 18px;
+    right: 18px;
+  }
+}
+

@@ -1,0 +1,12 @@
+# Django and REST Framework
+Django==4.2.10
+djangorestframework==3.14.0
+django-filter==24.1
+django-cors-headers==4.9.0
+
+# Database - SQL Server (ODBC)
+pyodbc==5.1.0
+mssql-django==1.5
+
+# Config
+python-decouple==3.8
