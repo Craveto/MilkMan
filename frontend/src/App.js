@@ -17,6 +17,7 @@ import SubscriptionsPage from './pages/SubscriptionsPage';
 import CustomersPage from './pages/CustomersPage';
 import ProductsPage from './pages/ProductsPage';
 import AdminDeliveriesPage from './pages/AdminDeliveriesPage';
+import AdminPasswordChangePage from './pages/AdminPasswordChangePage';
 import UserDashboard from './pages/UserDashboard';
 import LandingPage from './pages/LandingPage';
 import UserDeliveryPage from './pages/UserDeliveryPage';
@@ -29,16 +30,39 @@ import DeveloperAdminApplicationsPage from './pages/DeveloperAdminApplicationsPa
 import DeveloperLoginPage from './pages/DeveloperLoginPage';
 import { authService, developerAuthService, userService } from './services/api';
 
-const getDashboardPath = (role) => (role === 'admin' ? '/admin/dashboard' : '/user/dashboard');
+const isDeveloperApp = () => window.location.port === '3001';
+const getDashboardPath = (role) => {
+  if (role === 'admin') {
+    return isDeveloperApp() ? '/admin/developer' : '/admin/dashboard';
+  }
+  return '/user/dashboard';
+};
 
 function ProtectedRoute({ authUser }) {
   const location = useLocation();
+  const developerApp = isDeveloperApp();
   if (!authUser) {
     const next = encodeURIComponent(location.pathname || '/');
-    if ((location.pathname || '').startsWith('/admin/developer')) {
+    if (developerApp || (location.pathname || '').startsWith('/admin/developer')) {
       return <Navigate to={`/developer/login?next=${next}`} replace />;
     }
     return <Navigate to={`/auth?next=${next}`} replace />;
+  }
+  if (
+    developerApp
+    && authUser.role === 'admin'
+    && location.pathname !== '/admin/developer'
+    && location.pathname !== '/developer/login'
+    && location.pathname !== '/admin/change-password'
+  ) {
+    return <Navigate to="/admin/developer" replace />;
+  }
+  if (
+    authUser.role === 'admin'
+    && authUser.must_change_password
+    && location.pathname !== '/admin/change-password'
+  ) {
+    return <Navigate to="/admin/change-password" replace />;
   }
   return <Outlet />;
 }
@@ -77,6 +101,7 @@ function AuthEntry({ authUser, onLogin, onSignup }) {
 
 function MainLayout({ authUser, onLogout, children }) {
   const location = useLocation();
+  const developerApp = isDeveloperApp();
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 768px)').matches);
   const [sidebarOpen, setSidebarOpen] = useState(() => !window.matchMedia('(max-width: 768px)').matches);
   const [unreadAlertCount, setUnreadAlertCount] = useState(0);
@@ -131,6 +156,11 @@ function MainLayout({ authUser, onLogout, children }) {
 
   const navItems = useMemo(() => {
     if (authUser?.role === 'admin') {
+      if (developerApp) {
+        return [
+          { to: '/admin/developer', label: 'Developer', icon: 'DV' },
+        ];
+      }
       const base = [
         { to: '/admin/dashboard', label: 'Dashboard', icon: 'DB' },
         { to: '/admin/deliveries', label: 'Deliveries', icon: 'DL' },
@@ -140,8 +170,7 @@ function MainLayout({ authUser, onLogout, children }) {
         { to: '/customers', label: 'Customers', icon: 'CU' },
         { to: '/products', label: 'Products', icon: 'PD' },
       ];
-      const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-      if (authUser?.admin_role === 'super_admin' && isLocal) {
+      if (authUser?.admin_role === 'super_admin') {
         base.push({ to: '/admin/developer', label: 'Developer', icon: 'DV' });
       }
       return base;
@@ -156,7 +185,7 @@ function MainLayout({ authUser, onLogout, children }) {
       { to: '/user/profile', label: 'Profile', icon: 'PR' },
       { to: '/user/offers', label: 'Offers', icon: 'OF' },
     ];
-  }, [authUser, unreadAlertCount]);
+  }, [authUser, developerApp, unreadAlertCount]);
 
   const bottomNavItems = useMemo(() => {
     if (authUser?.role !== 'user') return [];
@@ -275,12 +304,15 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true);
 
   const refreshAuthUser = async () => {
-    const response = await authService.me();
+    const response = isDeveloperApp()
+      ? await developerAuthService.me()
+      : await authService.me();
     setAuthUser(response.data.user || null);
   };
 
   useEffect(() => {
     const bootstrapAuth = async () => {
+      const developerApp = isDeveloperApp();
       const isLocal =
         window.location.hostname === 'localhost'
         || window.location.hostname === '127.0.0.1';
@@ -288,7 +320,7 @@ function App() {
       try {
         // Security: on localhost/dev, always start from a fresh logged-out state.
         // This prevents "last user still logged in" when you reopen the site on a shared laptop.
-        if (isLocal) {
+        if (isLocal && !developerApp) {
           const did = window.sessionStorage.getItem('mm_autologout_on_load') === '1';
           if (!did) {
             window.sessionStorage.setItem('mm_autologout_on_load', '1');
@@ -333,7 +365,11 @@ function App() {
 
   const handleLogout = async () => {
     try {
-      await authService.logout();
+      if (isDeveloperApp()) {
+        await developerAuthService.logout();
+      } else {
+        await authService.logout();
+      }
     } catch (error) {
       // Ignore API errors during logout and still clear client auth state.
     } finally {
@@ -353,14 +389,20 @@ function App() {
           element={
             authUser
               ? <Navigate to={getDashboardPath(authUser.role)} replace />
-              : <LandingPage onLogin={handleLogin} onSignup={handleSignup} />
+              : (
+                isDeveloperApp()
+                  ? <Navigate to="/developer/login" replace />
+                  : <LandingPage onLogin={handleLogin} onSignup={handleSignup} />
+              )
           }
         />
 
         <Route
           path="/auth"
           element={
-            <AuthEntry authUser={authUser} onLogin={handleLogin} onSignup={handleSignup} />
+            isDeveloperApp()
+              ? <Navigate to="/developer/login" replace />
+              : <AuthEntry authUser={authUser} onLogin={handleLogin} onSignup={handleSignup} />
           }
         />
 
@@ -374,6 +416,16 @@ function App() {
         />
 
         <Route element={<ProtectedRoute authUser={authUser} />}>
+          <Route
+            path="/admin/change-password"
+            element={(
+              <RoleRoute authUser={authUser} allowedRole="admin">
+                <MainLayout authUser={authUser} onLogout={handleLogout}>
+                  <AdminPasswordChangePage authUser={authUser} onAuthUserUpdate={setAuthUser} />
+                </MainLayout>
+              </RoleRoute>
+            )}
+          />
           <Route
             path="/admin/dashboard"
             element={(

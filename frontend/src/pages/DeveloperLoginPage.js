@@ -6,11 +6,6 @@ function DeveloperLoginPage({ onDeveloperLogin }) {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const isLocal = useMemo(() => {
-    const host = window.location.hostname;
-    return host === 'localhost' || host === '127.0.0.1';
-  }, []);
-
   const [form, setForm] = useState({ identifier: '', password: '' });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -35,22 +30,11 @@ function DeveloperLoginPage({ onDeveloperLogin }) {
     }
   };
 
-  if (!isLocal) {
-    return (
-      <div className="auth-page">
-        <div className="auth-card auth-card-modal">
-          <h1>Developer Login</h1>
-          <p>This login is only available on the developer machine.</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="auth-page">
       <div className="auth-card auth-card-modal">
         <h1>Developer Login</h1>
-        <p>Super Admin only. Localhost access required.</p>
+        <p>Super Admin only. Access is validated by the backend.</p>
         {error && <div className="auth-error">{error}</div>}
         <form className="auth-form" onSubmit={submit}>
           <label>
@@ -83,4 +67,3 @@ function DeveloperLoginPage({ onDeveloperLogin }) {
 }
 
 export default DeveloperLoginPage;
-

@@ -12,15 +12,18 @@ from django.utils import timezone
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 import hashlib
+import logging
 import secrets
 import time
 from django.conf import settings
 from django.core.mail import send_mail
+from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 
 from .models import (
     Admin, Category, Subscription, Customer, Product, SubscriptionBasketItem,
     CustomerAddress,
     AdminSignupApplication,
+    AdminSecurityProfile,
     UserNotification,
     SubscriptionDelivery, SubscriptionDeliveryItem,
     PaymentTransaction,
@@ -35,6 +38,9 @@ from .serializers import (
     CustomerAddressSerializer,
     AdminSignupApplicationSerializer,
 )
+
+logger = logging.getLogger(__name__)
+DEVELOPER_TOKEN_HEADER = 'HTTP_X_DEVELOPER_TOKEN'
 
 
 def _resolve_admin_for_request(request):
@@ -54,6 +60,10 @@ def _resolve_admin_for_request(request):
 
 def _client_ip(request):
     try:
+        if getattr(settings, 'DEVELOPER_TRUST_X_FORWARDED_FOR', False):
+            forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+            if forwarded_for:
+                return forwarded_for.split(',')[0].strip()
         return request.META.get('REMOTE_ADDR')
     except Exception:
         return None
@@ -66,6 +76,9 @@ def _is_developer_request(request):
 
 
 def _require_developer_super_admin(request):
+    token_admin = _resolve_developer_admin_from_token(request)
+    if token_admin:
+        return token_admin
     admin = _resolve_admin_for_request(request)
     if not admin or admin.role != 'super_admin':
         return None
@@ -74,15 +87,75 @@ def _require_developer_super_admin(request):
     return admin
 
 
-def _send_email_safe(subject, body, recipients):
+def _developer_signer():
+    return TimestampSigner(salt='milkman-developer-auth')
+
+
+def _developer_token_max_age():
+    return max(300, int(getattr(settings, 'DEVELOPER_TOKEN_MAX_AGE_SECONDS', 60 * 60 * 12)))
+
+
+def _issue_developer_token(admin):
+    return _developer_signer().sign(str(admin.admin_id))
+
+
+def _resolve_developer_admin_from_token(request):
+    if not _is_developer_request(request):
+        return None
+
+    token = request.META.get(DEVELOPER_TOKEN_HEADER)
+    if not token:
+        return None
+
+    try:
+        raw_admin_id = _developer_signer().unsign(token, max_age=_developer_token_max_age())
+    except (BadSignature, SignatureExpired):
+        return None
+
+    try:
+        admin_id = int(raw_admin_id)
+    except (TypeError, ValueError):
+        return None
+
+    return Admin.objects.filter(admin_id=admin_id, is_active=True, role='super_admin').first()
+
+
+def _send_email_safe(subject, body, recipients, fail_silently=False):
     recipients = [r for r in (recipients or []) if r]
     if not recipients:
         return False
     try:
-        send_mail(subject, body, getattr(settings, 'DEFAULT_FROM_EMAIL', None), recipients, fail_silently=True)
-        return True
+        delivered = send_mail(
+            subject,
+            body,
+            getattr(settings, 'DEFAULT_FROM_EMAIL', None),
+            recipients,
+            fail_silently=fail_silently,
+        )
+        return bool(delivered)
     except Exception:
-        return False
+        if fail_silently:
+            logger.exception("Email delivery failed for recipients=%s", recipients)
+            return False
+        raise
+    return False
+
+
+def _send_required_email(subject, body, recipients):
+    recipients = [r for r in (recipients or []) if r]
+    if not recipients:
+        raise ValueError("Recipient email is required")
+    delivered = _send_email_safe(subject, body, recipients, fail_silently=False)
+    if not delivered:
+        raise RuntimeError("Email backend did not confirm delivery")
+    return True
+
+
+def _notify_developers(subject, body):
+    recipients = getattr(settings, 'DEVELOPER_EMAILS', []) or []
+    if not recipients:
+        return True
+    return _send_email_safe(subject, body, recipients, fail_silently=True)
 
 
 def _generate_unique_admin_username(prefix="mm_admin"):
@@ -91,6 +164,71 @@ def _generate_unique_admin_username(prefix="mm_admin"):
         if not Admin.objects.filter(username__iexact=candidate).exists():
             return candidate
     return f"{prefix}_{int(time.time())}"
+
+
+def _admin_security_profile(admin):
+    if not admin:
+        return None
+    profile, _ = AdminSecurityProfile.objects.get_or_create(admin=admin)
+    return profile
+
+
+def _admin_lockout_limit():
+    return max(1, int(getattr(settings, 'ADMIN_MAX_FAILED_LOGIN_ATTEMPTS', 5)))
+
+
+def _admin_lockout_minutes():
+    return max(1, int(getattr(settings, 'ADMIN_LOCKOUT_MINUTES', 30)))
+
+
+def _admin_is_locked(admin):
+    profile = _admin_security_profile(admin)
+    if not profile or not profile.locked_until:
+        return False, None
+    if profile.locked_until <= timezone.now():
+        profile.locked_until = None
+        profile.failed_login_attempts = 0
+        profile.save(update_fields=['locked_until', 'failed_login_attempts', 'updated_at'])
+        return False, None
+    return True, profile.locked_until
+
+
+def _record_admin_login_failure(admin):
+    profile = _admin_security_profile(admin)
+    if not profile:
+        return
+    profile.failed_login_attempts += 1
+    update_fields = ['failed_login_attempts', 'updated_at']
+    if profile.failed_login_attempts >= _admin_lockout_limit():
+        profile.locked_until = timezone.now() + timedelta(minutes=_admin_lockout_minutes())
+        update_fields.append('locked_until')
+    profile.save(update_fields=update_fields)
+
+
+def _reset_admin_login_failures(admin):
+    profile = _admin_security_profile(admin)
+    if not profile:
+        return
+    profile.failed_login_attempts = 0
+    profile.locked_until = None
+    profile.save(update_fields=['failed_login_attempts', 'locked_until', 'updated_at'])
+
+
+def _mark_admin_password_changed(admin, must_change_password=False):
+    profile = _admin_security_profile(admin)
+    if not profile:
+        return
+    profile.must_change_password = must_change_password
+    profile.last_password_change_at = timezone.now()
+    profile.failed_login_attempts = 0
+    profile.locked_until = None
+    profile.save(update_fields=[
+        'must_change_password',
+        'last_password_change_at',
+        'failed_login_attempts',
+        'locked_until',
+        'updated_at',
+    ])
 
 
 def _scoped_products_queryset(request):
@@ -124,7 +262,7 @@ class AdminViewSet(viewsets.ModelViewSet):
         admin = _resolve_admin_for_request(self.request)
         if not admin:
             return Admin.objects.none()
-        if admin.role == "super_admin" and _is_developer_request(self.request):
+        if admin.role == "super_admin":
             return Admin.objects.all()
         return Admin.objects.filter(admin_id=admin.admin_id)
 
@@ -132,7 +270,7 @@ class AdminViewSet(viewsets.ModelViewSet):
         admin = _resolve_admin_for_request(request)
         if not admin:
             return Response({"error": "Admin authentication required"}, status=status.HTTP_403_FORBIDDEN)
-        if admin.role != "super_admin" or not _is_developer_request(request):
+        if admin.role != "super_admin":
             return Response(AdminSerializer(Admin.objects.filter(admin_id=admin.admin_id), many=True).data)
         return super().list(request, *args, **kwargs)
 
@@ -140,7 +278,7 @@ class AdminViewSet(viewsets.ModelViewSet):
         admin = _resolve_admin_for_request(request)
         if not admin:
             return Response({"error": "Admin authentication required"}, status=status.HTTP_403_FORBIDDEN)
-        if admin.role == "super_admin" and _is_developer_request(request):
+        if admin.role == "super_admin":
             return super().retrieve(request, *args, **kwargs)
         obj = Admin.objects.filter(admin_id=admin.admin_id).first()
         if not obj:
@@ -148,23 +286,47 @@ class AdminViewSet(viewsets.ModelViewSet):
         return Response(AdminSerializer(obj).data)
 
     def create(self, request, *args, **kwargs):
-        if not _require_developer_super_admin(request):
-            return Response({"error": "Developer access required"}, status=status.HTTP_403_FORBIDDEN)
+        admin = _resolve_admin_for_request(request)
+        if not admin or admin.role != "super_admin":
+            return Response({"error": "Super admin access required"}, status=status.HTTP_403_FORBIDDEN)
         return super().create(request, *args, **kwargs)
 
     def update(self, request, *args, **kwargs):
-        if not _require_developer_super_admin(request):
-            return Response({"error": "Developer access required"}, status=status.HTTP_403_FORBIDDEN)
+        acting_admin = _resolve_admin_for_request(request)
+        if not acting_admin:
+            return Response({"error": "Admin authentication required"}, status=status.HTTP_403_FORBIDDEN)
+
+        target_admin = self.get_object()
+        if acting_admin.role != "super_admin" and acting_admin.admin_id != target_admin.admin_id:
+            return Response({"error": "Super admin access required"}, status=status.HTTP_403_FORBIDDEN)
+
+        if acting_admin.role != "super_admin":
+            mutable = {'first_name', 'last_name', 'email', 'phone', 'username', 'password'}
+            for key in list(request.data.keys()):
+                if key not in mutable:
+                    request.data.pop(key, None)
         return super().update(request, *args, **kwargs)
 
     def partial_update(self, request, *args, **kwargs):
-        if not _require_developer_super_admin(request):
-            return Response({"error": "Developer access required"}, status=status.HTTP_403_FORBIDDEN)
+        acting_admin = _resolve_admin_for_request(request)
+        if not acting_admin:
+            return Response({"error": "Admin authentication required"}, status=status.HTTP_403_FORBIDDEN)
+
+        target_admin = self.get_object()
+        if acting_admin.role != "super_admin" and acting_admin.admin_id != target_admin.admin_id:
+            return Response({"error": "Super admin access required"}, status=status.HTTP_403_FORBIDDEN)
+
+        if acting_admin.role != "super_admin":
+            mutable = {'first_name', 'last_name', 'email', 'phone', 'username', 'password'}
+            for key in list(request.data.keys()):
+                if key not in mutable:
+                    request.data.pop(key, None)
         return super().partial_update(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
-        if not _require_developer_super_admin(request):
-            return Response({"error": "Developer access required"}, status=status.HTTP_403_FORBIDDEN)
+        admin = _resolve_admin_for_request(request)
+        if not admin or admin.role != "super_admin":
+            return Response({"error": "Super admin access required"}, status=status.HTTP_403_FORBIDDEN)
         return super().destroy(request, *args, **kwargs)
     
     @action(detail=False, methods=['get'])
@@ -590,6 +752,7 @@ def hello_world(request):
 
 
 def _admin_payload(admin):
+    profile = _admin_security_profile(admin)
     return {
         "id": admin.admin_id,
         "first_name": admin.first_name,
@@ -597,6 +760,8 @@ def _admin_payload(admin):
         "email": admin.email,
         "role": "admin",
         "admin_role": admin.role,
+        "must_change_password": bool(profile.must_change_password) if profile else False,
+        "locked_until": profile.locked_until.isoformat() if profile and profile.locked_until else None,
     }
 
 
@@ -712,14 +877,23 @@ def auth_login(request):
         )
 
     admin = Admin.objects.filter(Q(email__iexact=identifier) | Q(username__iexact=identifier)).first()
-    if admin and admin.is_active and admin.check_password(password):
-        if admin.role == "super_admin":
+    if admin and admin.is_active:
+        locked, locked_until = _admin_is_locked(admin)
+        if locked:
             return Response(
-                {"error": "Developer login required for super admin"},
-                status=status.HTTP_403_FORBIDDEN,
+                {"error": "Account is temporarily locked", "locked_until": locked_until.isoformat()},
+                status=status.HTTP_423_LOCKED,
             )
-        session_persisted = _persist_auth_session(request, "admin", admin.admin_id)
-        return Response({"message": "Login successful", "user": _admin_payload(admin), "session_persisted": session_persisted})
+        if admin.check_password(password):
+            _reset_admin_login_failures(admin)
+            if admin.role == "super_admin":
+                return Response(
+                    {"error": "Developer login required for super admin"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            session_persisted = _persist_auth_session(request, "admin", admin.admin_id)
+            return Response({"message": "Login successful", "user": _admin_payload(admin), "session_persisted": session_persisted})
+        _record_admin_login_failure(admin)
 
     customer = Customer.objects.filter(Q(email__iexact=identifier) | Q(username__iexact=identifier)).first()
     if not customer:
@@ -747,11 +921,29 @@ def developer_auth_login(request):
         )
 
     admin = Admin.objects.filter(Q(email__iexact=identifier) | Q(username__iexact=identifier)).first()
-    if not admin or not admin.is_active or not admin.check_password(password) or admin.role != "super_admin":
+    if not admin or not admin.is_active or admin.role != "super_admin":
+        return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+    locked, locked_until = _admin_is_locked(admin)
+    if locked:
+        return Response(
+            {"error": "Account is temporarily locked", "locked_until": locked_until.isoformat()},
+            status=status.HTTP_423_LOCKED,
+        )
+    if not admin.check_password(password):
+        _record_admin_login_failure(admin)
         return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
 
-    session_persisted = _persist_auth_session(request, "admin", admin.admin_id)
-    return Response({"message": "Login successful", "user": _admin_payload(admin), "session_persisted": session_persisted})
+    _reset_admin_login_failures(admin)
+    developer_token = _issue_developer_token(admin)
+    return Response({"message": "Login successful", "user": _admin_payload(admin), "developer_token": developer_token})
+
+
+@api_view(['GET'])
+def developer_auth_me(request):
+    admin = _resolve_developer_admin_from_token(request)
+    if not admin:
+        return Response({"user": None}, status=status.HTTP_401_UNAUTHORIZED)
+    return Response({"user": _admin_payload(admin)})
 
 
 @api_view(['GET'])
@@ -786,6 +978,27 @@ def auth_me(request):
 def auth_logout(request):
     request.session.flush()
     return Response({"message": "Logout successful"})
+
+
+@api_view(['POST'])
+def admin_change_password(request):
+    admin = _resolve_admin_for_request(request)
+    if not admin:
+        return Response({"error": "Admin authentication required"}, status=status.HTTP_403_FORBIDDEN)
+
+    current_password = request.data.get("current_password")
+    new_password = request.data.get("new_password")
+    if not current_password or not new_password:
+        return Response({"error": "current_password and new_password are required"}, status=status.HTTP_400_BAD_REQUEST)
+    if len(str(new_password)) < 8:
+        return Response({"error": "New password must be at least 8 characters"}, status=status.HTTP_400_BAD_REQUEST)
+    if not admin.check_password(current_password):
+        return Response({"error": "Current password is incorrect"}, status=status.HTTP_400_BAD_REQUEST)
+
+    admin.set_password(new_password)
+    admin.save(update_fields=['password', 'updated_at'])
+    _mark_admin_password_changed(admin, must_change_password=False)
+    return Response({"message": "Password changed successfully", "user": _admin_payload(admin)})
 
 
 def _resolve_customer_for_user_request(request):
@@ -2107,37 +2320,46 @@ def developer_admin_application_approve(request, application_id):
     if application.status != 'pending':
         return Response({"error": f"Application is already {application.status}"}, status=status.HTTP_400_BAD_REQUEST)
 
-    username = _generate_unique_admin_username()
-    temp_password = secrets.token_urlsafe(10)
+    try:
+        with transaction.atomic():
+            username = _generate_unique_admin_username()
+            temp_password = secrets.token_urlsafe(10)
 
-    new_admin = Admin(
-        first_name=application.first_name,
-        last_name=application.last_name,
-        email=application.email,
-        phone=application.phone,
-        username=username,
-        role='admin',
-        is_active=True,
-    )
-    new_admin.set_password(temp_password)
-    new_admin.save()
+            new_admin = Admin(
+                first_name=application.first_name,
+                last_name=application.last_name,
+                email=application.email,
+                phone=application.phone,
+                username=username,
+                role='admin',
+                is_active=True,
+            )
+            new_admin.set_password(temp_password)
+            new_admin.save()
+            _mark_admin_password_changed(new_admin, must_change_password=True)
 
-    application.status = 'approved'
-    application.reviewed_by = admin
-    application.reviewed_at = timezone.now()
-    application.decision_note = request.data.get("note") or ""
-    application.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'decision_note'])
+            application.status = 'approved'
+            application.reviewed_by = admin
+            application.reviewed_at = timezone.now()
+            application.decision_note = request.data.get("note") or ""
+            application.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'decision_note'])
 
-    applicant_body = (
-        "Your MilkMan admin application has been approved.\n\n"
-        f"Login ID (username): {username}\n"
-        f"Temporary password: {temp_password}\n\n"
-        "Please login and change your password after first login."
-    )
-    _send_email_safe("[MilkMan] Admin application approved", applicant_body, [application.email])
+            applicant_body = (
+                "Your MilkMan admin application has been approved.\n\n"
+                f"Login ID (username): {username}\n"
+                f"Temporary password: {temp_password}\n\n"
+                "Please login and change your password after first login."
+            )
+            _send_required_email("[MilkMan] Admin application approved", applicant_body, [application.email])
+    except Exception:
+        logger.exception("Failed to approve application_id=%s", application.application_id)
+        return Response(
+            {"error": "Approval email could not be sent. No changes were saved."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
     dev_body = f"Approved application #{application.application_id} -> admin_id={new_admin.admin_id}, username={username}"
-    _send_email_safe(f"[MilkMan] Approved admin application #{application.application_id}", dev_body, getattr(settings, 'DEVELOPER_EMAILS', []) or [])
+    _notify_developers(f"[MilkMan] Approved admin application #{application.application_id}", dev_body)
 
     return Response({"message": "Approved and credentials sent", "admin_id": new_admin.admin_id, "username": username})
 
@@ -2155,19 +2377,27 @@ def developer_admin_application_reject(request, application_id):
         return Response({"error": f"Application is already {application.status}"}, status=status.HTTP_400_BAD_REQUEST)
 
     note = (request.data.get("note") or "").strip()
-    application.status = 'rejected'
-    application.reviewed_by = admin
-    application.reviewed_at = timezone.now()
-    application.decision_note = note
-    application.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'decision_note'])
+    try:
+        with transaction.atomic():
+            application.status = 'rejected'
+            application.reviewed_by = admin
+            application.reviewed_at = timezone.now()
+            application.decision_note = note
+            application.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'decision_note'])
 
-    applicant_body = "Your MilkMan admin application has been rejected."
-    if note:
-        applicant_body += f"\n\nReason: {note}"
-    _send_email_safe("[MilkMan] Admin application rejected", applicant_body, [application.email])
+            applicant_body = "Your MilkMan admin application has been rejected."
+            if note:
+                applicant_body += f"\n\nReason: {note}"
+            _send_required_email("[MilkMan] Admin application rejected", applicant_body, [application.email])
+    except Exception:
+        logger.exception("Failed to reject application_id=%s", application.application_id)
+        return Response(
+            {"error": "Rejection email could not be sent. No changes were saved."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
     dev_body = f"Rejected application #{application.application_id}. Note: {note}"
-    _send_email_safe(f"[MilkMan] Rejected admin application #{application.application_id}", dev_body, getattr(settings, 'DEVELOPER_EMAILS', []) or [])
+    _notify_developers(f"[MilkMan] Rejected admin application #{application.application_id}", dev_body)
 
     return Response({"message": "Rejected and applicant notified"})
 

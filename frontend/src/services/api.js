@@ -2,6 +2,7 @@ import axios from 'axios';
 
 // Configure via CRA env var in production: REACT_APP_API_BASE_URL
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8001/api';
+const DEVELOPER_TOKEN_KEY = 'mm_developer_token';
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -9,6 +10,48 @@ const apiClient = axios.create({
     'Content-Type': 'application/json',
   },
   withCredentials: true,
+});
+
+const developerApiClient = axios.create({
+  baseURL: API_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  withCredentials: false,
+});
+
+const getDeveloperToken = () => {
+  try {
+    return window.sessionStorage.getItem(DEVELOPER_TOKEN_KEY) || '';
+  } catch (_error) {
+    return '';
+  }
+};
+
+const setDeveloperToken = (token) => {
+  try {
+    if (token) {
+      window.sessionStorage.setItem(DEVELOPER_TOKEN_KEY, token);
+    } else {
+      window.sessionStorage.removeItem(DEVELOPER_TOKEN_KEY);
+    }
+  } catch (_error) {
+    // ignore storage failures
+  }
+};
+
+const clearDeveloperToken = () => setDeveloperToken('');
+
+developerApiClient.interceptors.request.use((config) => {
+  const token = getDeveloperToken();
+  const nextConfig = { ...config };
+  nextConfig.headers = {
+    ...(config.headers || {}),
+  };
+  if (token) {
+    nextConfig.headers['X-Developer-Token'] = token;
+  }
+  return nextConfig;
 });
 
 // ======================== AUTH SERVICE ========================
@@ -20,7 +63,17 @@ export const authService = {
 };
 
 export const developerAuthService = {
-  login: (data) => apiClient.post('/developer/auth/login/', data),
+  login: async (data) => {
+    const response = await developerApiClient.post('/developer/auth/login/', data);
+    setDeveloperToken(response?.data?.developer_token || '');
+    return response;
+  },
+  me: () => developerApiClient.get('/developer/auth/me/'),
+  logout: async () => {
+    clearDeveloperToken();
+    return Promise.resolve({ data: { message: 'Developer logout successful' } });
+  },
+  clearToken: clearDeveloperToken,
 };
 
 // ======================== USER SERVICE ========================
@@ -55,6 +108,7 @@ export const adminService = {
   create: (data) => apiClient.post('/admins/', data),
   update: (id, data) => apiClient.put(`/admins/${id}/`, data),
   delete: (id) => apiClient.delete(`/admins/${id}/`),
+  changePassword: (data) => apiClient.post('/auth/admin/change-password/', data),
   getActive: () => apiClient.get('/admins/active_admins/'),
   deactivate: (id) => apiClient.post(`/admins/${id}/deactivate/`),
   getSubscriptionDeliveries: (params = {}) => apiClient.get('/deliveries/', { params }),
@@ -70,9 +124,9 @@ export const adminService = {
 };
 
 export const developerService = {
-  listAdminApplications: (status = 'pending') => apiClient.get('/developer/admin-applications/', { params: { status } }),
-  approveAdminApplication: (applicationId, note = '') => apiClient.post(`/developer/admin-applications/${applicationId}/approve/`, { note }),
-  rejectAdminApplication: (applicationId, note = '') => apiClient.post(`/developer/admin-applications/${applicationId}/reject/`, { note }),
+  listAdminApplications: (status = 'pending') => developerApiClient.get('/developer/admin-applications/', { params: { status } }),
+  approveAdminApplication: (applicationId, note = '') => developerApiClient.post(`/developer/admin-applications/${applicationId}/approve/`, { note }),
+  rejectAdminApplication: (applicationId, note = '') => developerApiClient.post(`/developer/admin-applications/${applicationId}/reject/`, { note }),
 };
 
 // ======================== CATEGORY SERVICE ========================

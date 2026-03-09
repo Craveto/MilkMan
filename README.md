@@ -33,6 +33,19 @@ npm start
 
 Frontend defaults to calling `http://localhost:8001/api` unless `REACT_APP_API_BASE_URL` is set.
 
+## Production notes
+
+For hosted deployment, set these backend environment variables correctly:
+
+- `DJANGO_ALLOWED_HOSTS`: your backend domain(s)
+- `CORS_ALLOWED_ORIGINS`: your frontend domain(s)
+- `CSRF_TRUSTED_ORIGINS`: your frontend domain(s)
+- `EMAIL_BACKEND`, `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL`
+- `DEVELOPER_ALLOWED_IPS`: only the public IPs allowed to use the developer console
+- `DEVELOPER_TRUST_X_FORWARDED_FOR=true` if your app runs behind a reverse proxy or platform load balancer
+
+Important: admin applications are now approved/rejected only if the applicant email is sent successfully. If email sending fails, the status change is rolled back automatically.
+
 ## One-command dev start (Windows)
 
 ```powershell

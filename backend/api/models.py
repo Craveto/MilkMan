@@ -52,6 +52,22 @@ class Admin(models.Model):
         return f"{self.first_name} {self.last_name} ({self.role})"
 
 
+class AdminSecurityProfile(models.Model):
+    admin = models.OneToOneField('Admin', on_delete=models.CASCADE, related_name='security_profile')
+    must_change_password = models.BooleanField(default=False)
+    last_password_change_at = models.DateTimeField(null=True, blank=True)
+    failed_login_attempts = models.PositiveIntegerField(default=0)
+    locked_until = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'admin_security_profile'
+
+    def __str__(self):
+        return f"AdminSecurityProfile({self.admin_id})"
+
+
 # ======================== ADMIN SIGNUP APPLICATION ========================
 class AdminSignupApplication(models.Model):
     """Pending application for shopkeepers who want admin access."""

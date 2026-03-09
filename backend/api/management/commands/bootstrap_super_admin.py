@@ -2,7 +2,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 import secrets
 
-from api.models import Admin
+from api.models import Admin, AdminSecurityProfile
 
 
 class Command(BaseCommand):
@@ -61,6 +61,15 @@ class Command(BaseCommand):
             existing_by_email.set_password(password)
             existing_by_email.updated_at = timezone.now()
             existing_by_email.save()
+            AdminSecurityProfile.objects.update_or_create(
+                admin=existing_by_email,
+                defaults={
+                    "must_change_password": False,
+                    "last_password_change_at": timezone.now(),
+                    "failed_login_attempts": 0,
+                    "locked_until": None,
+                },
+            )
 
             self.stdout.write(self.style.SUCCESS("Promoted admin to super_admin."))
             self.stdout.write(f"Login ID (username): {existing_by_email.username}")
@@ -81,8 +90,16 @@ class Command(BaseCommand):
         )
         admin.set_password(password)
         admin.save()
+        AdminSecurityProfile.objects.update_or_create(
+            admin=admin,
+            defaults={
+                "must_change_password": False,
+                "last_password_change_at": timezone.now(),
+                "failed_login_attempts": 0,
+                "locked_until": None,
+            },
+        )
 
         self.stdout.write(self.style.SUCCESS("Created super_admin."))
         self.stdout.write(f"Login ID (username): {admin.username}")
         self.stdout.write(f"Password: {password}")
-

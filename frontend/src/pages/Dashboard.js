@@ -15,8 +15,7 @@ function Dashboard({ authUser }) {
   const [error, setError] = useState(null);
 
   const showDeveloper = useMemo(() => {
-    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-    return authUser?.admin_role === 'super_admin' && isLocal;
+    return authUser?.admin_role === 'super_admin';
   }, [authUser?.admin_role]);
 
   useEffect(() => {

@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 from pathlib import Path
 from decouple import config as env_config, Csv
+from corsheaders.defaults import default_headers
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -166,6 +167,9 @@ CORS_ALLOWED_ORIGINS = env_config(
 )
 
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'x-developer-token',
+]
 
 # Dev convenience: allow any localhost port (safe for local dev only).
 DEV_ALLOW_ALL_LOCALHOST_ORIGINS = env_config('DEV_ALLOW_ALL_LOCALHOST_ORIGINS', default=True, cast=bool)
@@ -192,12 +196,14 @@ DEVELOPER_ALLOWED_IPS = env_config(
     default='127.0.0.1,::1',
     cast=Csv()
 )
+DEVELOPER_TRUST_X_FORWARDED_FOR = env_config('DEVELOPER_TRUST_X_FORWARDED_FOR', default=False, cast=bool)
 
 DEVELOPER_EMAILS = env_config(
     'DEVELOPER_EMAILS',
     default='',
     cast=Csv()
 )
+DEVELOPER_TOKEN_MAX_AGE_SECONDS = env_config('DEVELOPER_TOKEN_MAX_AGE_SECONDS', default=60 * 60 * 12, cast=int)
 
 # Email (defaults to console for dev)
 EMAIL_BACKEND = env_config(
@@ -211,12 +217,15 @@ EMAIL_PORT = env_config('EMAIL_PORT', default=587, cast=int)
 EMAIL_USE_TLS = env_config('EMAIL_USE_TLS', default=True, cast=bool)
 EMAIL_HOST_USER = env_config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = env_config('EMAIL_HOST_PASSWORD', default='')
+EMAIL_TIMEOUT = env_config('EMAIL_TIMEOUT', default=15, cast=int)
 
 # Session security
 # Default behavior: do NOT persist login across browser restarts (prevents "last user is still logged in").
 SESSION_EXPIRE_AT_BROWSER_CLOSE = env_config('SESSION_EXPIRE_AT_BROWSER_CLOSE', default=True, cast=bool)
 SESSION_COOKIE_AGE = env_config('SESSION_COOKIE_AGE', default=60 * 60 * 6, cast=int)  # 6 hours
 SESSION_SAVE_EVERY_REQUEST = env_config('SESSION_SAVE_EVERY_REQUEST', default=True, cast=bool)
+ADMIN_MAX_FAILED_LOGIN_ATTEMPTS = env_config('ADMIN_MAX_FAILED_LOGIN_ATTEMPTS', default=5, cast=int)
+ADMIN_LOCKOUT_MINUTES = env_config('ADMIN_LOCKOUT_MINUTES', default=30, cast=int)
 
 # Dev only: return OTP in API responses (for testing without SMS/email providers).
 DEV_RETURN_OTPS = env_config('DEV_RETURN_OTPS', default=False, cast=bool)

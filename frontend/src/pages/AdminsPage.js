@@ -103,7 +103,11 @@ function AdminsPage() {
       fetchAdmins();
     } catch (error) {
       console.error('Error saving admin:', error);
-      const errorMsg = error.response?.data?.detail || error.response?.data?.non_field_errors?.[0] || 'Failed to save admin';
+      const errorMsg =
+        error.response?.data?.error
+        || error.response?.data?.detail
+        || error.response?.data?.non_field_errors?.[0]
+        || 'Failed to save admin';
       alert('Error: ' + errorMsg);
     }
   };

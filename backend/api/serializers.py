@@ -1,10 +1,12 @@
 from rest_framework import serializers
+from django.utils import timezone
 from .models import (
     Admin, Category, Subscription, Customer, Product, SubscriptionBasketItem,
     SubscriptionDelivery, SubscriptionDeliveryItem,
     PaymentTransaction, Order, OrderItem, OrderPayment,
     CustomerAddress,
     AdminSignupApplication,
+    AdminSecurityProfile,
     UserNotification,
 )
 
@@ -13,12 +15,17 @@ from .models import (
 class AdminSerializer(serializers.ModelSerializer):
     """Serializer for Admin model"""
     password = serializers.CharField(write_only=True, required=False, allow_blank=False)
+    must_change_password = serializers.SerializerMethodField()
+    failed_login_attempts = serializers.SerializerMethodField()
+    locked_until = serializers.SerializerMethodField()
     
     class Meta:
         model = Admin
         fields = [
             'admin_id', 'first_name', 'last_name', 'email', 'phone',
-            'username', 'password', 'role', 'is_active', 'created_at', 'updated_at'
+            'username', 'password', 'role', 'is_active',
+            'must_change_password', 'failed_login_attempts', 'locked_until',
+            'created_at', 'updated_at'
         ]
         read_only_fields = ['admin_id', 'created_at', 'updated_at']
     
@@ -26,11 +33,22 @@ class AdminSerializer(serializers.ModelSerializer):
         # Extract password and hash it when creating
         password = validated_data.pop('password', None)
         admin = Admin(**validated_data)
+        must_change_password = False
         if password:
             admin.set_password(password)
         else:
             admin.set_password('DefaultPassword123!')  # Fallback if no password provided
+            must_change_password = True
         admin.save()
+        AdminSecurityProfile.objects.update_or_create(
+            admin=admin,
+            defaults={
+                'must_change_password': must_change_password,
+                'last_password_change_at': timezone.now(),
+                'failed_login_attempts': 0,
+                'locked_until': None,
+            },
+        )
         return admin
     
     def update(self, instance, validated_data):
@@ -41,7 +59,29 @@ class AdminSerializer(serializers.ModelSerializer):
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
+        if password:
+            AdminSecurityProfile.objects.update_or_create(
+                admin=instance,
+                defaults={
+                    'must_change_password': False,
+                    'last_password_change_at': timezone.now(),
+                    'failed_login_attempts': 0,
+                    'locked_until': None,
+                },
+            )
         return instance
+
+    def get_must_change_password(self, obj):
+        profile, _ = AdminSecurityProfile.objects.get_or_create(admin=obj)
+        return profile.must_change_password
+
+    def get_failed_login_attempts(self, obj):
+        profile, _ = AdminSecurityProfile.objects.get_or_create(admin=obj)
+        return profile.failed_login_attempts
+
+    def get_locked_until(self, obj):
+        profile, _ = AdminSecurityProfile.objects.get_or_create(admin=obj)
+        return profile.locked_until
 
 
 class AdminSignupApplicationSerializer(serializers.ModelSerializer):

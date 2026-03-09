@@ -4,12 +4,7 @@ import '../styles/ManagementPage.css';
 import '../styles/DeveloperConsole.css';
 
 function DeveloperAdminApplicationsPage({ authUser }) {
-  const isLocal = useMemo(() => {
-    const host = window.location.hostname;
-    return host === 'localhost' || host === '127.0.0.1';
-  }, []);
-
-  const allowed = authUser?.role === 'admin' && authUser?.admin_role === 'super_admin' && isLocal;
+  const allowed = authUser?.role === 'admin' && authUser?.admin_role === 'super_admin';
 
   const [statusFilter, setStatusFilter] = useState('pending');
   const [applications, setApplications] = useState([]);
@@ -97,7 +92,7 @@ function DeveloperAdminApplicationsPage({ authUser }) {
     return (
       <div className="page">
         <h2>Developer Console</h2>
-        <p>This page is only available on the developer machine (localhost) for a super admin account.</p>
+        <p>This page is only available to super admin accounts.</p>
       </div>
     );
   }
