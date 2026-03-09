@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 from pathlib import Path
 from decouple import config as env_config, Csv
 from corsheaders.defaults import default_headers
+import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -51,6 +52,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -81,27 +83,38 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 
 # Database
-# https://docs.djangoproject.com/en/5.0/ref/settings/#databases
-# Using SQL Server
+# Production: prefer DATABASE_URL (Supabase / Postgres)
+# Local fallback: SQL Server settings below remain supported for current development setup.
+DATABASE_URL = env_config('DATABASE_URL', default='')
+DATABASE_SSL_REQUIRE = env_config('DATABASE_SSL_REQUIRE', default=not DEBUG, cast=bool)
 
-DB_TRUSTED_CONNECTION = env_config('DB_TRUSTED_CONNECTION', default=True, cast=bool)
-DB_OPTIONS = {
-    'driver': env_config('DB_ODBC_DRIVER', default='ODBC Driver 17 for SQL Server'),
-}
-if DB_TRUSTED_CONNECTION:
-    DB_OPTIONS['Trusted_Connection'] = 'yes'
-
-DATABASES = {
-    'default': {
-        'ENGINE': 'mssql',
-        'NAME': env_config('DB_NAME', default='milkMan'),
-        'USER': env_config('DB_USER', default=''),
-        'PASSWORD': env_config('DB_PASSWORD', default=''),
-        'HOST': env_config('DB_HOST', default='localhost'),
-        'PORT': env_config('DB_PORT', default=''),
-        'OPTIONS': DB_OPTIONS,
+if DATABASE_URL:
+    DATABASES = {
+        'default': dj_database_url.parse(
+            DATABASE_URL,
+            conn_max_age=env_config('DATABASE_CONN_MAX_AGE', default=600, cast=int),
+            ssl_require=DATABASE_SSL_REQUIRE,
+        )
     }
-}
+else:
+    DB_TRUSTED_CONNECTION = env_config('DB_TRUSTED_CONNECTION', default=True, cast=bool)
+    DB_OPTIONS = {
+        'driver': env_config('DB_ODBC_DRIVER', default='ODBC Driver 17 for SQL Server'),
+    }
+    if DB_TRUSTED_CONNECTION:
+        DB_OPTIONS['Trusted_Connection'] = 'yes'
+
+    DATABASES = {
+        'default': {
+            'ENGINE': 'mssql',
+            'NAME': env_config('DB_NAME', default='milkMan'),
+            'USER': env_config('DB_USER', default=''),
+            'PASSWORD': env_config('DB_PASSWORD', default=''),
+            'HOST': env_config('DB_HOST', default='localhost'),
+            'PORT': env_config('DB_PORT', default=''),
+            'OPTIONS': DB_OPTIONS,
+        }
+    }
 
 
 
@@ -139,7 +152,9 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # REST Framework Configuration
 REST_FRAMEWORK = {
@@ -190,6 +205,12 @@ if DEBUG and DEV_ALLOW_ALL_LOCALHOST_ORIGINS:
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+TRUST_PROXY_SSL_HEADER = env_config('TRUST_PROXY_SSL_HEADER', default=not DEBUG, cast=bool)
+if TRUST_PROXY_SSL_HEADER:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = env_config('USE_X_FORWARDED_HOST', default=TRUST_PROXY_SSL_HEADER, cast=bool)
+SECURE_SSL_REDIRECT = env_config('SECURE_SSL_REDIRECT', default=False, cast=bool)
+
 # Developer review / notifications
 DEVELOPER_ALLOWED_IPS = env_config(
     'DEVELOPER_ALLOWED_IPS',
@@ -224,6 +245,10 @@ EMAIL_TIMEOUT = env_config('EMAIL_TIMEOUT', default=15, cast=int)
 SESSION_EXPIRE_AT_BROWSER_CLOSE = env_config('SESSION_EXPIRE_AT_BROWSER_CLOSE', default=True, cast=bool)
 SESSION_COOKIE_AGE = env_config('SESSION_COOKIE_AGE', default=60 * 60 * 6, cast=int)  # 6 hours
 SESSION_SAVE_EVERY_REQUEST = env_config('SESSION_SAVE_EVERY_REQUEST', default=True, cast=bool)
+SESSION_COOKIE_SECURE = env_config('SESSION_COOKIE_SECURE', default=not DEBUG, cast=bool)
+CSRF_COOKIE_SECURE = env_config('CSRF_COOKIE_SECURE', default=not DEBUG, cast=bool)
+SESSION_COOKIE_SAMESITE = env_config('SESSION_COOKIE_SAMESITE', default='Lax' if DEBUG else 'None')
+CSRF_COOKIE_SAMESITE = env_config('CSRF_COOKIE_SAMESITE', default='Lax' if DEBUG else 'None')
 ADMIN_MAX_FAILED_LOGIN_ATTEMPTS = env_config('ADMIN_MAX_FAILED_LOGIN_ATTEMPTS', default=5, cast=int)
 ADMIN_LOCKOUT_MINUTES = env_config('ADMIN_LOCKOUT_MINUTES', default=30, cast=int)
 
@@ -236,10 +261,11 @@ TWILIO_ACCOUNT_SID = env_config('TWILIO_ACCOUNT_SID', default='')
 TWILIO_AUTH_TOKEN = env_config('TWILIO_AUTH_TOKEN', default='')
 TWILIO_FROM_NUMBER = env_config('TWILIO_FROM_NUMBER', default='')  # e.g. +12025550123
 
-# Apply SQL Server 2025 version detection patch
-try:
-    from .sql_server_patch import patch_sql_server_version
-    patch_sql_server_version()
-except Exception as e:
-    import sys
-    print(f"Warning: Could not apply SQL Server patch: {e}", file=sys.stderr)
+# Apply SQL Server 2025 version detection patch only for SQL Server deployments.
+if DATABASES['default']['ENGINE'] == 'mssql':
+    try:
+        from .sql_server_patch import patch_sql_server_version
+        patch_sql_server_version()
+    except Exception as e:
+        import sys
+        print(f"Warning: Could not apply SQL Server patch: {e}", file=sys.stderr)

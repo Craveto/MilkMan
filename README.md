@@ -1,68 +1,166 @@
-# MilkMan (Django + React)
+# MilkMan
 
-Monorepo layout:
+MilkMan is a Django + React monorepo with:
 
-- `DjangoProject/`: Django REST backend (SQL Server via ODBC)
-- `frontend/`: React frontend (CRA)
+- `backend/`: Django REST API
+- `frontend/`: React frontend
 
-## Backend (Windows, PowerShell)
+The project now supports both:
+
+- local development with your current SQL Server setup
+- hosted deployment with `Vercel + Render + Supabase Postgres`
+
+## Local development
+
+### Backend
 
 ```powershell
-cd MilkMan\DjangoProject
+cd backend
 python -m venv venv
 .\venv\Scripts\pip install -r requirements.txt
-
-# Create a .env based on .env.example
 copy .env.example .env
-
 .\venv\Scripts\python manage.py migrate
 .\venv\Scripts\python manage.py runserver 8001
 ```
 
-## Frontend
+Local behavior:
+
+- if `DATABASE_URL` is empty, Django uses the SQL Server settings from `.env`
+- if `DATABASE_URL` is set, Django uses Postgres instead
+
+### Frontend
 
 ```powershell
-cd MilkMan\frontend
+cd frontend
 npm install
-
-# Optional: configure API base URL
 copy .env.example .env
-
 npm start
 ```
 
-Frontend defaults to calling `http://localhost:8001/api` unless `REACT_APP_API_BASE_URL` is set.
+Ports:
 
-## Production notes
+- normal site: `http://localhost:3000`
+- developer window: `http://localhost:3001`
+- backend API: `http://localhost:8001`
 
-For hosted deployment, set these backend environment variables correctly:
-
-- `DJANGO_ALLOWED_HOSTS`: your backend domain(s)
-- `CORS_ALLOWED_ORIGINS`: your frontend domain(s)
-- `CSRF_TRUSTED_ORIGINS`: your frontend domain(s)
-- `EMAIL_BACKEND`, `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL`
-- `DEVELOPER_ALLOWED_IPS`: only the public IPs allowed to use the developer console
-- `DEVELOPER_TRUST_X_FORWARDED_FOR=true` if your app runs behind a reverse proxy or platform load balancer
-
-Important: admin applications are now approved/rejected only if the applicant email is sent successfully. If email sending fails, the status change is rolled back automatically.
-
-## One-command dev start (Windows)
+### One-command local start
 
 ```powershell
-# Starts backend + frontend (if not running) and opens the app
 .\start-milkman.ps1
-
-# Starts backend + frontend (if not running) and opens the Developer window
 .\start-milkman.ps1 -Developer
 ```
 
-## Bootstrap a developer super admin (first time)
+## Hosting target
 
-If you don't have a `super_admin` yet, create one:
+Recommended stack:
+
+- frontend: `Vercel`
+- backend: `Render`
+- database: `Supabase Postgres`
+- email: `Brevo SMTP`
+
+## Supabase setup
+
+1. Create a Supabase project.
+2. Open `Project Settings -> Database`.
+3. Copy the Postgres connection string.
+4. Put it into Render as `DATABASE_URL`.
+
+Use the pooled connection string first for easier hosting.
+
+## Render backend deployment
+
+This repo includes [render.yaml](/e:/Bizmetric/Trae/MilkMan/render.yaml).
+
+Render notes:
+
+- root directory: `backend`
+- dependency file for Render: `requirements.render.txt`
+- start command uses `gunicorn`
+- static files use `WhiteNoise`
+
+Required Render environment variables:
+
+- `DJANGO_SECRET_KEY`
+- `DJANGO_DEBUG=false`
+- `DJANGO_ALLOWED_HOSTS`
+- `DATABASE_URL`
+- `DATABASE_SSL_REQUIRE=true`
+- `CORS_ALLOWED_ORIGINS`
+- `CSRF_TRUSTED_ORIGINS`
+- `DEFAULT_FROM_EMAIL`
+- `EMAIL_BACKEND`
+- `EMAIL_HOST`
+- `EMAIL_PORT`
+- `EMAIL_USE_TLS`
+- `EMAIL_HOST_USER`
+- `EMAIL_HOST_PASSWORD`
+- `DEVELOPER_ALLOWED_IPS`
+- `DEVELOPER_TRUST_X_FORWARDED_FOR=true`
+- `DEVELOPER_EMAILS`
+
+Important cookie/session values for split frontend/backend hosting:
+
+- `SESSION_COOKIE_SECURE=true`
+- `CSRF_COOKIE_SECURE=true`
+- `SESSION_COOKIE_SAMESITE=None`
+- `CSRF_COOKIE_SAMESITE=None`
+
+## Vercel frontend deployment
+
+This repo includes [frontend/vercel.json](/e:/Bizmetric/Trae/MilkMan/frontend/vercel.json) for SPA routing.
+
+Deploy with:
+
+- framework: Create React App
+- root directory: `frontend`
+- build command: `npm run build`
+- output directory: `build`
+
+Required Vercel environment variable:
+
+- `REACT_APP_API_BASE_URL=https://your-render-service.onrender.com/api`
+
+## Migration path from current local setup
+
+### Fastest safe path
+
+1. Keep local SQL Server for now.
+2. Deploy a fresh Supabase Postgres database for hosting.
+3. Run Django migrations on Supabase from Render.
+4. Test hosted flows.
+5. If needed later, migrate old SQL Server data into Supabase.
+
+If your current local data is not important, starting fresh on Supabase is the least risky option.
+
+## First-time super admin
 
 ```powershell
-cd DjangoProject
+cd backend
 .\venv\Scripts\python manage.py bootstrap_super_admin --email you@example.com --phone 9876543210
 ```
 
-Use the printed `Login ID (username)` + `Password` to login, then open the developer console.
+## Important production behavior already implemented
+
+- developer window auth is isolated from the normal site
+- admin approval/rejection emails rollback if applicant email fails
+- approved admins must change their temporary password on first login
+- developer console access is controlled by IP/token rules
+
+## Deployment checklist
+
+1. Create Supabase project.
+2. Deploy backend on Render.
+3. Add all backend env vars on Render.
+4. Deploy frontend on Vercel.
+5. Set `REACT_APP_API_BASE_URL` on Vercel.
+6. Add your Vercel domain to `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`.
+7. Configure Brevo SMTP on Render.
+8. Test:
+   - user login
+   - admin login
+   - developer login
+   - admin approval email
+   - admin rejection email
+   - forced password change
+   - admin edit/update
