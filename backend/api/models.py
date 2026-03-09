@@ -139,6 +139,14 @@ class Subscription(models.Model):
         null=False,
         blank=False
     )
+    product_discount_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        default=1.00,
+    )
+    includes_delivery_scheduling = models.BooleanField(default=True)
+    suppress_daily_payments = models.BooleanField(default=True)
     max_products = models.IntegerField(validators=[MinValueValidator(1)], null=False, blank=False)
     features = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)
@@ -230,6 +238,11 @@ class Customer(models.Model):
 # ======================== CUSTOMER ADDRESS MODEL ========================
 class CustomerAddress(models.Model):
     """Address book for customers (supports multiple saved addresses)."""
+    DELIVERY_SLOT_CHOICES = [
+        ('morning', 'Morning'),
+        ('evening', 'Evening'),
+    ]
+
     address_id = models.AutoField(primary_key=True)
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='addresses')
     label = models.CharField(max_length=50, null=True, blank=True)
@@ -239,6 +252,7 @@ class CustomerAddress(models.Model):
     state = models.CharField(max_length=50, null=True, blank=True)
     postal_code = models.CharField(max_length=20, null=True, blank=True)
     country = models.CharField(max_length=100, null=True, blank=True)
+    delivery_slot = models.CharField(max_length=20, choices=DELIVERY_SLOT_CHOICES, default='morning')
     is_default = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -253,6 +267,37 @@ class CustomerAddress(models.Model):
     def __str__(self):
         name = self.label or "Address"
         return f"{name} ({self.customer_id})"
+
+
+# ======================== USER NOTIFICATION MODEL ========================
+class UserNotification(models.Model):
+    TYPE_CHOICES = [
+        ('system', 'System'),
+        ('warning', 'Warning'),
+        ('payment', 'Payment'),
+        ('order', 'Order'),
+    ]
+
+    notification_id = models.AutoField(primary_key=True)
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='notifications')
+    product = models.ForeignKey('Product', on_delete=models.SET_NULL, null=True, blank=True, related_name='notifications')
+    notification_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default='system')
+    title = models.CharField(max_length=160)
+    message = models.TextField()
+    metadata = models.JSONField(default=dict, blank=True)
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'user_notification'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['customer', 'created_at']),
+            models.Index(fields=['customer', 'is_read']),
+        ]
+
+    def __str__(self):
+        return f"{self.customer_id}: {self.title}"
 
 
 # ======================== PRODUCT MODEL ========================
@@ -351,14 +396,19 @@ class SubscriptionDelivery(models.Model):
     """Persisted delivery record for subscription basket items."""
     STATUS_CHOICES = [
         ('scheduled', 'Scheduled'),
+        ('packed', 'Packed'),
+        ('out_for_delivery', 'Out For Delivery'),
         ('delivered', 'Delivered'),
         ('missed', 'Missed'),
         ('skipped', 'Skipped'),
     ]
+    DELIVERY_SLOT_CHOICES = CustomerAddress.DELIVERY_SLOT_CHOICES
 
     delivery_id = models.AutoField(primary_key=True)
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='subscription_deliveries')
     subscription = models.ForeignKey(Subscription, on_delete=models.SET_NULL, null=True, blank=True, related_name='deliveries')
+    delivery_address = models.ForeignKey(CustomerAddress, on_delete=models.SET_NULL, null=True, blank=True, related_name='subscription_deliveries')
+    delivery_slot = models.CharField(max_length=20, choices=DELIVERY_SLOT_CHOICES, default='morning')
     scheduled_for = models.DateField()
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='scheduled')
     delivered_at = models.DateTimeField(null=True, blank=True)
@@ -440,18 +490,27 @@ class PaymentTransaction(models.Model):
 class Order(models.Model):
     """Customer product orders created from cart checkout"""
     STATUS_CHOICES = [
-        ('pending', 'Pending'),
-        ('paid', 'Paid'),
+        ('placed', 'Placed'),
+        ('confirmed', 'Confirmed'),
+        ('packed', 'Packed'),
+        ('out_for_delivery', 'Out For Delivery'),
+        ('delivered', 'Delivered'),
         ('failed', 'Failed'),
     ]
+    DELIVERY_SLOT_CHOICES = CustomerAddress.DELIVERY_SLOT_CHOICES
 
     order_id = models.AutoField(primary_key=True)
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='orders')
+    delivery_address = models.ForeignKey(CustomerAddress, on_delete=models.SET_NULL, null=True, blank=True, related_name='orders')
+    delivery_date = models.DateField(default=timezone.localdate)
+    delivery_slot = models.CharField(max_length=20, choices=DELIVERY_SLOT_CHOICES, default='morning')
     subtotal = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)])
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)], default=0)
     tax_amount = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)], default=0)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)])
     currency = models.CharField(max_length=10, default='INR')
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='placed')
+    delivered_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

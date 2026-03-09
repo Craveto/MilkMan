@@ -16,6 +16,7 @@ import CategoriesPage from './pages/CategoriesPage';
 import SubscriptionsPage from './pages/SubscriptionsPage';
 import CustomersPage from './pages/CustomersPage';
 import ProductsPage from './pages/ProductsPage';
+import AdminDeliveriesPage from './pages/AdminDeliveriesPage';
 import UserDashboard from './pages/UserDashboard';
 import LandingPage from './pages/LandingPage';
 import UserDeliveryPage from './pages/UserDeliveryPage';
@@ -26,7 +27,7 @@ import UserProfilePage from './pages/UserProfilePage';
 import UserOffersPage from './pages/UserOffersPage';
 import DeveloperAdminApplicationsPage from './pages/DeveloperAdminApplicationsPage';
 import DeveloperLoginPage from './pages/DeveloperLoginPage';
-import { authService, developerAuthService } from './services/api';
+import { authService, developerAuthService, userService } from './services/api';
 
 const getDashboardPath = (role) => (role === 'admin' ? '/admin/dashboard' : '/user/dashboard');
 
@@ -78,6 +79,7 @@ function MainLayout({ authUser, onLogout, children }) {
   const location = useLocation();
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 768px)').matches);
   const [sidebarOpen, setSidebarOpen] = useState(() => !window.matchMedia('(max-width: 768px)').matches);
+  const [unreadAlertCount, setUnreadAlertCount] = useState(0);
 
   useEffect(() => {
     const media = window.matchMedia('(max-width: 768px)');
@@ -98,10 +100,40 @@ function MainLayout({ authUser, onLogout, children }) {
     }
   }, []);
 
+  useEffect(() => {
+    if (authUser?.role !== 'user' || !authUser?.id) {
+      setUnreadAlertCount(0);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const syncUnreadAlerts = async () => {
+      if (document.hidden || location.pathname === '/user/notifications') return;
+      try {
+        const response = await userService.getNotifications(authUser.id, {
+          unread_only: true,
+          limit: 1,
+        });
+        if (cancelled) return;
+        setUnreadAlertCount(Number(response?.data?.unread_count || 0));
+      } catch (_error) {
+        if (!cancelled) setUnreadAlertCount(0);
+      }
+    };
+
+    syncUnreadAlerts();
+    const intervalId = window.setInterval(syncUnreadAlerts, 300000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [authUser?.id, authUser?.role, location.pathname]);
+
   const navItems = useMemo(() => {
     if (authUser?.role === 'admin') {
       const base = [
         { to: '/admin/dashboard', label: 'Dashboard', icon: 'DB' },
+        { to: '/admin/deliveries', label: 'Deliveries', icon: 'DL' },
         { to: '/admins', label: 'Admins', icon: 'AD' },
         { to: '/categories', label: 'Categories', icon: 'CT' },
         { to: '/subscriptions', label: 'Subscriptions', icon: 'SB' },
@@ -119,12 +151,12 @@ function MainLayout({ authUser, onLogout, children }) {
       { to: '/user/dashboard', label: 'Dashboard', icon: 'DB' },
       { to: '/user/delivery', label: 'Delivery', icon: 'DL' },
       { to: '/user/orders', label: 'Orders', icon: 'OR' },
-      { to: '/user/notifications', label: 'Alerts', icon: 'NT' },
+      { to: '/user/notifications', label: 'Alerts', icon: 'NT', hasUnread: unreadAlertCount > 0 },
       { to: '/user/support', label: 'Support', icon: 'SP' },
       { to: '/user/profile', label: 'Profile', icon: 'PR' },
       { to: '/user/offers', label: 'Offers', icon: 'OF' },
     ];
-  }, [authUser]);
+  }, [authUser, unreadAlertCount]);
 
   const bottomNavItems = useMemo(() => {
     if (authUser?.role !== 'user') return [];
@@ -205,7 +237,10 @@ function MainLayout({ authUser, onLogout, children }) {
         <nav className="sidebar-nav">
           {navItems.map((item) => (
             <Link key={item.to} to={item.to} className="nav-item">
-              <span className="icon">{item.icon}</span>
+              <span className="icon">
+                {item.icon}
+                {item.hasUnread && <span className="nav-alert-dot" aria-hidden="true" />}
+              </span>
               {sidebarOpen && <span>{item.label}</span>}
             </Link>
           ))}
@@ -355,6 +390,16 @@ function App() {
               <RoleRoute authUser={authUser} allowedRole="admin">
                 <MainLayout authUser={authUser} onLogout={handleLogout}>
                   <DeveloperAdminApplicationsPage authUser={authUser} />
+                </MainLayout>
+              </RoleRoute>
+            )}
+          />
+          <Route
+            path="/admin/deliveries"
+            element={(
+              <RoleRoute authUser={authUser} allowedRole="admin">
+                <MainLayout authUser={authUser} onLogout={handleLogout}>
+                  <AdminDeliveriesPage />
                 </MainLayout>
               </RoleRoute>
             )}

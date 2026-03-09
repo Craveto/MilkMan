@@ -20,7 +20,8 @@ function UserOffersPage({ authUser }) {
       </header>
 
       <div className="module-grid">
-        <article className="module-card">
+        <article className="module-card"> 
+          <h1>You can now refer to</h1>
           <h3>Referral Program</h3>
           <div className="module-meta">Share your code and earn INR 100 after each successful signup.</div>
           <div className="module-actions">

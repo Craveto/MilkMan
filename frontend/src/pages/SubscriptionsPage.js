@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { subscriptionService } from '../services/api';
 import DataTable from '../components/DataTable';
 import Modal from '../components/Modal';
@@ -14,6 +14,9 @@ function SubscriptionsPage() {
     price: '',
     billing_cycle: 'monthly',
     duration_days: '30',
+    product_discount_percent: '1.00',
+    includes_delivery_scheduling: true,
+    suppress_daily_payments: true,
     max_products: '10',
     features: '',
     is_active: true,
@@ -37,17 +40,24 @@ function SubscriptionsPage() {
     }
   };
 
-  const handleAdd = () => {
+  const resetForm = () => {
     setFormData({
       name: '',
       description: '',
       price: '',
       billing_cycle: 'monthly',
       duration_days: '30',
+      product_discount_percent: '1.00',
+      includes_delivery_scheduling: true,
+      suppress_daily_payments: true,
       max_products: '10',
       features: '',
       is_active: true,
     });
+  };
+
+  const handleAdd = () => {
+    resetForm();
     setEditingId(null);
     setShowModal(true);
   };
@@ -55,6 +65,9 @@ function SubscriptionsPage() {
   const handleEdit = (subscription) => {
     setFormData({
       ...subscription,
+      product_discount_percent: subscription.product_discount_percent ?? '1.00',
+      includes_delivery_scheduling: Boolean(subscription.includes_delivery_scheduling),
+      suppress_daily_payments: Boolean(subscription.suppress_daily_payments),
       features: JSON.stringify(subscription.features || []),
     });
     setEditingId(subscription.subscription_id);
@@ -64,7 +77,7 @@ function SubscriptionsPage() {
   const handleDelete = async (subscription) => {
     try {
       await subscriptionService.delete(subscription.subscription_id);
-      setSubscriptions(subscriptions.filter(s => s.subscription_id !== subscription.subscription_id));
+      setSubscriptions((previous) => previous.filter((item) => item.subscription_id !== subscription.subscription_id));
       alert('Subscription deleted successfully');
     } catch (error) {
       console.error('Error deleting subscription:', error);
@@ -77,9 +90,13 @@ function SubscriptionsPage() {
     try {
       const data = {
         ...formData,
+        duration_days: parseInt(formData.duration_days, 10),
+        max_products: parseInt(formData.max_products, 10),
+        price: parseFloat(formData.price),
+        product_discount_percent: parseFloat(formData.product_discount_percent || 0),
         features: formData.features ? JSON.parse(formData.features) : [],
       };
-      
+
       if (editingId) {
         await subscriptionService.update(editingId, data);
         alert('Subscription updated successfully');
@@ -97,10 +114,11 @@ function SubscriptionsPage() {
 
   const columns = [
     { key: 'name', label: 'Plan Name' },
-    { key: 'price', label: 'Price', render: (val) => `$${val}` },
+    { key: 'price', label: 'Price', render: (val) => `INR ${val}` },
+    { key: 'product_discount_percent', label: 'Discount', render: (val) => `${val}%` },
     { key: 'billing_cycle', label: 'Billing' },
-    { key: 'max_products', label: 'Max Products' },
-    { key: 'is_active', label: 'Status', render: (val) => val ? '✅ Active' : '❌ Inactive' },
+    { key: 'max_products', label: 'Plan Products' },
+    { key: 'is_active', label: 'Status', render: (val) => (val ? 'Active' : 'Inactive') },
   ];
 
   return (
@@ -115,7 +133,11 @@ function SubscriptionsPage() {
         onDelete={handleDelete}
       />
 
-      <Modal isOpen={showModal} title={editingId ? 'Edit Subscription' : 'Add Subscription'} onClose={() => setShowModal(false)}>
+      <Modal
+        isOpen={showModal}
+        title={editingId ? 'Edit Subscription' : 'Add Subscription'}
+        onClose={() => setShowModal(false)}
+      >
         <form onSubmit={handleSubmit} className="form">
           <div className="form-group">
             <label>Plan Name *</label>
@@ -162,7 +184,21 @@ function SubscriptionsPage() {
               />
             </div>
             <div className="form-group">
-              <label>Max Products *</label>
+              <label>Product Discount %</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                max="100"
+                value={formData.product_discount_percent}
+                onChange={(e) => setFormData({ ...formData, product_discount_percent: e.target.value })}
+              />
+            </div>
+          </div>
+
+          <div className="form-row">
+            <div className="form-group">
+              <label>Plan Product Limit *</label>
               <input
                 type="number"
                 value={formData.max_products}
@@ -170,15 +206,36 @@ function SubscriptionsPage() {
                 required
               />
             </div>
+            <div className="form-group">
+              <label>Description</label>
+              <textarea
+                value={formData.description}
+                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                rows="3"
+              />
+            </div>
           </div>
 
           <div className="form-group">
-            <label>Description</label>
-            <textarea
-              value={formData.description}
-              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              rows="3"
-            />
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(formData.includes_delivery_scheduling)}
+                onChange={(e) => setFormData({ ...formData, includes_delivery_scheduling: e.target.checked })}
+              />
+              Includes scheduled delivery management
+            </label>
+          </div>
+
+          <div className="form-group">
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(formData.suppress_daily_payments)}
+                onChange={(e) => setFormData({ ...formData, suppress_daily_payments: e.target.checked })}
+              />
+              No daily payment required for plan basket items
+            </label>
           </div>
 
           <div className="form-group">
@@ -186,8 +243,8 @@ function SubscriptionsPage() {
             <textarea
               value={formData.features}
               onChange={(e) => setFormData({ ...formData, features: e.target.value })}
-              rows="2"
-              placeholder='["Feature 1", "Feature 2"]'
+              rows="3"
+              placeholder='["Morning delivery route", "1% discount on one-time add-ons"]'
             />
           </div>
 

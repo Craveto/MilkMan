@@ -10,6 +10,7 @@ router.register(r'subscriptions', views.SubscriptionViewSet, basename='subscript
 router.register(r'customers', views.CustomerViewSet, basename='customer')
 router.register(r'products', views.ProductViewSet, basename='product')
 router.register(r'deliveries', views.SubscriptionDeliveryViewSet, basename='delivery')
+router.register(r'admin-orders', views.AdminOrderViewSet, basename='admin-order')
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -24,6 +25,7 @@ urlpatterns = [
     path('user/subscription-basket/', views.user_subscription_basket, name='user-subscription-basket'),
     path('user/subscription-deliveries/', views.user_subscription_deliveries, name='user-subscription-deliveries'),
     path('user/payments/', views.user_payments, name='user-payments'),
+    path('user/notifications/', views.user_notifications, name='user-notifications'),
     path('user/deactivate-subscription/', views.user_deactivate_subscription, name='user-deactivate-subscription'),
     path('user/cart-checkout/', views.user_cart_checkout, name='user-cart-checkout'),
     path('user/orders/', views.user_orders, name='user-orders'),

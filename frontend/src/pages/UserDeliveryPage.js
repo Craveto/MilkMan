@@ -3,28 +3,67 @@ import { useNavigate } from 'react-router-dom';
 import { userService } from '../services/api';
 import '../styles/UserModules.css';
 
+const DELIVERY_STEPS = ['scheduled', 'packed', 'out_for_delivery', 'delivered'];
+const TERMINAL_DELIVERY_STEPS = ['missed', 'skipped'];
+
+const formatStatus = (value) => (
+  (value || 'scheduled')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+);
+
+function StatusTimeline({ status }) {
+  const currentIndex = DELIVERY_STEPS.indexOf(status);
+  const terminal = TERMINAL_DELIVERY_STEPS.includes(status) ? status : '';
+
+  return (
+    <div className="mm-stepper">
+      {DELIVERY_STEPS.map((step, index) => (
+        <div key={step} className={`mm-step ${index <= currentIndex ? 'done' : ''}`}>
+          <span className="mm-dot" />
+          <span>{formatStatus(step)}</span>
+        </div>
+      ))}
+      {terminal ? (
+        <div className="mm-step done">
+          <span className="mm-dot mm-dot-terminal" />
+          <span>{formatStatus(terminal)}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function UserDeliveryPage({ authUser }) {
   const navigate = useNavigate();
   const [orders, setOrders] = useState([]);
   const [deliveries, setDeliveries] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [paused, setPaused] = useState(() => window.localStorage.getItem('mm_delivery_paused') === '1');
-  const [prefs, setPrefs] = useState(() => {
-    const raw = window.localStorage.getItem('mm_delivery_prefs');
-    return raw ? JSON.parse(raw) : { slot: 'morning', contactless: true };
-  });
-  const [prefsStatus, setPrefsStatus] = useState(null);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     const loadOrders = async () => {
       setLoading(true);
+      setError('');
       try {
-        const [ordersRes, deliveriesRes] = await Promise.all([
+        const [ordersRes, deliveriesRes] = await Promise.allSettled([
           userService.getOrders(authUser?.id),
-          userService.getSubscriptionDeliveries(authUser?.id, 7),
+          userService.getSubscriptionDeliveries(authUser?.id, 14),
         ]);
-        setOrders(ordersRes.data || []);
-        setDeliveries(deliveriesRes.data?.deliveries || []);
+
+        if (ordersRes.status === 'fulfilled') {
+          setOrders(Array.isArray(ordersRes.value.data) ? ordersRes.value.data : []);
+        } else {
+          setOrders([]);
+          setError(ordersRes.reason?.response?.data?.error || 'Could not load order deliveries.');
+        }
+
+        if (deliveriesRes.status === 'fulfilled') {
+          setDeliveries(Array.isArray(deliveriesRes.value.data?.deliveries) ? deliveriesRes.value.data.deliveries : []);
+        } else {
+          setDeliveries([]);
+          setError(deliveriesRes.reason?.response?.data?.error || 'Could not load subscription deliveries.');
+        }
       } finally {
         setLoading(false);
       }
@@ -32,132 +71,86 @@ function UserDeliveryPage({ authUser }) {
     loadOrders();
   }, [authUser?.id]);
 
-  useEffect(() => {
-    window.localStorage.setItem('mm_delivery_paused', paused ? '1' : '0');
-  }, [paused]);
-
-  const savePrefs = () => {
-    window.localStorage.setItem('mm_delivery_prefs', JSON.stringify(prefs));
-    setPrefsStatus('Saved');
-    window.setTimeout(() => setPrefsStatus(null), 1500);
-  };
-
-  const paidOrders = useMemo(() => (
-    (orders || []).filter((order) => order.status === 'paid').slice(0, 5)
-  ), [orders]);
-
   const nextDelivery = useMemo(() => {
-    if (!deliveries || deliveries.length === 0) return null;
-    const sorted = [...deliveries].sort((a, b) => new Date(a.date) - new Date(b.date));
-    return sorted[0] || null;
+    if (!deliveries.length) return null;
+    return [...deliveries].sort((a, b) => new Date(a.scheduled_for) - new Date(b.scheduled_for))[0];
   }, [deliveries]);
+
+  const activeOrders = useMemo(() => (
+    orders.filter((order) => ['placed', 'confirmed', 'packed', 'out_for_delivery'].includes(order.status)).slice(0, 6)
+  ), [orders]);
 
   return (
     <div className="user-module">
       <header className="user-module-header">
         <h1>Delivery Schedule</h1>
-        <p>Track upcoming deliveries and control your delivery flow.</p>
+        <p>Track route-ready deliveries, saved addresses, and the live status of recurring drops.</p>
       </header>
 
       <div className="module-actions" style={{ gap: 10 }}>
         <button type="button" className="ghost" onClick={() => navigate('/user/dashboard')}>Back to Dashboard</button>
-        <button type="button" onClick={() => setPaused((previous) => !previous)} className={paused ? 'danger' : ''}>
-          {paused ? 'Resume Deliveries' : 'Pause Deliveries'}
-        </button>
-        <button
-          type="button"
-          className="ghost"
-          onClick={() => {
-            window.localStorage.setItem('mm_user_active_panel', 'subscription');
-            navigate('/user/dashboard', { state: { from: '/user/delivery' } });
-          }}
-        >
-          Manage Plan Basket
-        </button>
+        <button type="button" className="ghost" onClick={() => navigate('/user/profile')}>Manage Addresses</button>
         <button type="button" className="ghost" onClick={() => navigate('/user/orders', { state: { from: '/user/delivery' } })}>View Orders</button>
       </div>
+
+      {error ? <div className="module-card danger-zone">{error}</div> : null}
 
       {loading ? (
         <div className="module-card">Loading delivery schedule...</div>
       ) : (
         <div className="module-grid">
-          <article className={`module-card ${paused ? 'danger-zone' : ''}`}>
-            <h3>Delivery Preferences</h3>
-            <div className="module-meta">These preferences apply to your device for now.</div>
-            <form
-              className="module-form"
-              style={{ border: 'none', padding: 0 }}
-              onSubmit={(event) => {
-                event.preventDefault();
-                savePrefs();
-              }}
-            >
-              <label>
-                Preferred time slot
-                <select value={prefs.slot} onChange={(event) => setPrefs({ ...prefs, slot: event.target.value })}>
-                  <option value="morning">Morning (6am–9am)</option>
-                  <option value="evening">Evening (5pm–8pm)</option>
-                </select>
-              </label>
-              <label className="module-checkbox">
-                <input
-                  type="checkbox"
-                  checked={prefs.contactless}
-                  onChange={(event) => setPrefs({ ...prefs, contactless: event.target.checked })}
-                />
-                Contactless delivery
-              </label>
-              <div className="module-actions">
-                <button type="submit">Save</button>
-                {prefsStatus && <span className="module-inline-status">{prefsStatus}</span>}
-              </div>
-            </form>
-          </article>
-
           <article className="module-card">
             <h3>Next Subscription Delivery</h3>
             {!nextDelivery ? (
-              <div className="module-meta">No subscription deliveries scheduled for the next 7 days.</div>
+              <div className="module-meta">No subscription deliveries scheduled for the next 14 days.</div>
             ) : (
-              <div className="module-item" style={{ alignItems: 'flex-start' }}>
-                <div>
-                  <div className="module-item-title">
-                    {new Date(nextDelivery.date).toLocaleDateString()}
-                    <span className="module-badge" style={{ marginLeft: 8 }}>
-                      {paused ? 'Paused' : 'Scheduled'}
-                    </span>
+              <>
+                <div className="module-item" style={{ alignItems: 'flex-start' }}>
+                  <div>
+                    <div className="module-item-title">
+                      {new Date(nextDelivery.scheduled_for).toLocaleDateString()}
+                      <span className="module-badge" style={{ marginLeft: 8 }}>
+                        {formatStatus(nextDelivery.status)}
+                      </span>
+                    </div>
+                    <div className="module-meta">
+                      {(nextDelivery.delivery_address_label || 'Delivery address')} • {formatStatus(nextDelivery.delivery_slot)}
+                    </div>
+                    {nextDelivery.delivery_address_line1 ? (
+                      <div className="module-meta">{nextDelivery.delivery_address_line1}</div>
+                    ) : null}
+                    <div className="module-meta">
+                      {(nextDelivery.items || []).length === 0
+                        ? 'No items'
+                        : nextDelivery.items.map((item) => `${item.product_name || item.name} x${item.quantity}`).join(', ')
+                      }
+                    </div>
                   </div>
-                  <div className="module-meta">
-                    {(nextDelivery.items || []).length === 0
-                      ? 'No items'
-                      : nextDelivery.items.map((i) => `${i.name} x${i.quantity}`).join(', ')
-                    }
-                  </div>
-                  <div className="module-meta">Slot: {prefs.slot === 'morning' ? 'Morning' : 'Evening'} · {prefs.contactless ? 'Contactless' : 'Standard'}</div>
                 </div>
-              </div>
+                <StatusTimeline status={nextDelivery.status} />
+              </>
             )}
           </article>
 
           <article className="module-card">
-            <h3>Subscription Deliveries (Next 7 Days)</h3>
-            {deliveries.length === 0 ? (
-              <div className="module-meta">No subscription deliveries scheduled.</div>
+            <h3>Open One-Time Orders</h3>
+            {activeOrders.length === 0 ? (
+              <div className="module-meta">No active one-time orders right now.</div>
             ) : (
               <div className="module-list">
-                {deliveries.map((delivery) => (
-                  <div key={delivery.date} className="module-item">
+                {activeOrders.map((order) => (
+                  <div key={order.order_id} className="module-item">
                     <div>
-                      <strong>{new Date(delivery.date).toLocaleDateString()}</strong>
+                      <strong>Order #{order.order_id}</strong>
                       <div className="module-meta">
-                        {(delivery.items || []).length === 0
-                          ? 'No items'
-                          : delivery.items.map((i) => `${i.name} x${i.quantity}`).join(', ')
-                        }
+                        {(order.delivery_address_label || 'Delivery address')} • {formatStatus(order.delivery_slot)}
+                      </div>
+                      <div className="module-meta">
+                        {order.delivery_date ? new Date(order.delivery_date).toLocaleDateString() : 'Date pending'}
                       </div>
                     </div>
                     <div>
-                      <span className="module-badge">{paused ? 'Paused' : 'Scheduled'}</span>
+                      <span className="module-badge">{formatStatus(order.status)}</span>
                     </div>
                   </div>
                 ))}
@@ -166,20 +159,27 @@ function UserDeliveryPage({ authUser }) {
           </article>
 
           <article className="module-card">
-            <h3>Recent Paid Orders</h3>
-            {paidOrders.length === 0 ? (
-              <div className="module-meta">No paid one-time orders yet.</div>
+            <h3>Subscription Deliveries</h3>
+            {deliveries.length === 0 ? (
+              <div className="module-meta">No subscription deliveries scheduled.</div>
             ) : (
               <div className="module-list">
-                {paidOrders.map((order) => (
-                  <div key={order.order_id} className="module-item">
+                {deliveries.map((delivery) => (
+                  <div key={delivery.delivery_id || delivery.scheduled_for} className="module-item">
                     <div>
-                      <strong>Order #{order.order_id}</strong>
-                      <div className="module-meta">{new Date(order.created_at).toLocaleString()}</div>
+                      <strong>{new Date(delivery.scheduled_for).toLocaleDateString()}</strong>
+                      <div className="module-meta">
+                        {(delivery.delivery_address_label || 'Delivery address')} • {formatStatus(delivery.delivery_slot)}
+                      </div>
+                      <div className="module-meta">
+                        {(delivery.items || []).length === 0
+                          ? 'No items'
+                          : delivery.items.map((item) => `${item.product_name || item.name} x${item.quantity}`).join(', ')
+                        }
+                      </div>
                     </div>
                     <div>
-                      <span className="module-badge">{order.status}</span>
-                      <div className="module-meta">INR {order.total_amount}</div>
+                      <span className="module-badge">{formatStatus(delivery.status)}</span>
                     </div>
                   </div>
                 ))}

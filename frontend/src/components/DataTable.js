@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import '../styles/DataTable.css';
 
 function DataTable({ title, columns, data, loading, onEdit, onDelete, onAdd }) {

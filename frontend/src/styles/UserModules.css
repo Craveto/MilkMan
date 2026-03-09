@@ -231,6 +231,12 @@
   padding: 9px 10px;
 }
 
+.payment-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .module-badge {
   border: 1px solid #99f6e4;
   background: #ecfeff;
@@ -375,6 +381,11 @@
   box-shadow: inset 0 0 0 2px rgba(236, 254, 255, 0.8);
 }
 
+.mm-dot-terminal {
+  background: rgba(202, 138, 4, 1) !important;
+  box-shadow: inset 0 0 0 2px rgba(255, 251, 235, 0.9) !important;
+}
+
 .module-accordion-chevron::before {
   content: "▾" !important;
 }
@@ -428,5 +439,9 @@
 
   .module-item.clickable:hover {
     transform: none;
+  }
+
+  .payment-row {
+    grid-template-columns: 1fr;
   }
 }

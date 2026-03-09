@@ -1,6 +1,8 @@
 # Monkey patch to fix SQL Server 2025 version detection issue
 import sys
 
+_patch_warning_printed = False
+
 def patch_sql_server_version():
     """Patch mssql backend to handle SQL Server 2025 version detection"""
     
@@ -54,8 +56,13 @@ def patch_sql_server_version():
                     return ver
             except Exception as e:
                 # If patching fails, return a safe default
-                print(f"Warning: Could not retrieve SQL Server version: {e}", file=sys.stderr)
-                return 2019  # Default to 2019
+                global _patch_warning_printed
+                fallback_version = 2019
+                setattr(self, cache_attr, fallback_version)
+                if not _patch_warning_printed:
+                    print(f"Warning: Could not retrieve SQL Server version: {e}", file=sys.stderr)
+                    _patch_warning_printed = True
+                return fallback_version
         
         # Override the method/property safely
         try:

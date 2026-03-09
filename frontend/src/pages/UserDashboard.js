@@ -83,15 +83,31 @@ function UserDashboard({ authUser }) {
   const [cartItems, setCartItems] = useState([]);
   const [cartOpen, setCartOpen] = useState(false);
   const [cartCheckoutOpen, setCartCheckoutOpen] = useState(false);
+  const [cartSubscriptionPlanId, setCartSubscriptionPlanId] = useState('');
+  const [subscriptionPlanChooserOpen, setSubscriptionPlanChooserOpen] = useState(false);
   const [cartCheckoutSubmitting, setCartCheckoutSubmitting] = useState(false);
   const [cartPaymentData, setCartPaymentData] = useState(cartPaymentTemplate);
+  const [deliveryAddresses, setDeliveryAddresses] = useState([]);
+  const [selectedOrderAddressId, setSelectedOrderAddressId] = useState('');
+  const [selectedOrderSlot, setSelectedOrderSlot] = useState('morning');
+  const [selectedOrderDate, setSelectedOrderDate] = useState(() => {
+    const nextDay = new Date();
+    nextDay.setDate(nextDay.getDate() + 1);
+    return nextDay.toISOString().slice(0, 10);
+  });
+  const [selectedSubscriptionAddressId, setSelectedSubscriptionAddressId] = useState('');
+  const [selectedSubscriptionSlot, setSelectedSubscriptionSlot] = useState('morning');
   const [notifications, setNotifications] = useState([]);
   const [cartAddedActivity, setCartAddedActivity] = useState([]);
   const [cartWarning, setCartWarning] = useState('');
   const [intentHandled, setIntentHandled] = useState(false);
+  const [cartHydrated, setCartHydrated] = useState(false);
   const [activePanel, setActivePanel] = useState('');
   const [successReceipt, setSuccessReceipt] = useState(null);
   const plansRef = useRef(null);
+  const cartStorageKey = useMemo(() => (
+    authUser?.id ? `mm_user_cart_${authUser.id}` : ''
+  ), [authUser?.id]);
 
   const activeSubscription = dashboardData.customer?.current_subscription || null;
   const activePlan = useMemo(() => {
@@ -105,6 +121,11 @@ function UserDashboard({ authUser }) {
     return Number.isFinite(limit) && limit > 0 ? limit : null;
   }, [activePlan?.max_products]);
 
+  const activePlanDiscountPercent = useMemo(() => {
+    const discount = Number(activePlan?.product_discount_percent || activeSubscription?.product_discount_percent || 0);
+    return Number.isFinite(discount) ? discount : 0;
+  }, [activePlan?.product_discount_percent, activeSubscription?.product_discount_percent]);
+
   const subscriptionBasketCount = useMemo(() => (
     (dashboardData.subscription_basket || []).filter((item) => item.is_active !== false).length
   ), [dashboardData.subscription_basket]);
@@ -116,6 +137,54 @@ function UserDashboard({ authUser }) {
       .reduce((sum, item) => sum + (item.price * item.quantity), 0);
     return { items, total };
   }, [cartItems]);
+
+  const cartDiscountPreview = useMemo(() => {
+    if (!activeSubscription || activePlanDiscountPercent <= 0) return 0;
+    const eligibleTotal = cartItems
+      .filter((item) => !item.unavailable)
+      .reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    return eligibleTotal * (activePlanDiscountPercent / 100);
+  }, [activeSubscription, activePlanDiscountPercent, cartItems]);
+
+  const subscriptionCartItems = useMemo(() => (
+    cartItems.filter((item) => !item.unavailable && item.requires_subscription)
+  ), [cartItems]);
+
+  const oneTimeCartItems = useMemo(() => (
+    cartItems.filter((item) => !item.unavailable)
+  ), [cartItems]);
+
+  const unavailableCartItems = useMemo(() => (
+    cartItems.filter((item) => item.unavailable)
+  ), [cartItems]);
+
+  const selectedCartSubscriptionPlan = useMemo(() => (
+    dashboardData.subscriptions.find((plan) => Number(plan.subscription_id) === Number(cartSubscriptionPlanId)) || null
+  ), [cartSubscriptionPlanId, dashboardData.subscriptions]);
+  const usingExistingPlan = cartSubscriptionPlanId === 'existing-plan';
+
+  const cartSubscriptionQuote = useMemo(() => {
+    const pricingPlan = usingExistingPlan ? activePlan : selectedCartSubscriptionPlan;
+    if (!pricingPlan || subscriptionCartItems.length === 0) return null;
+
+    const recurringDailySubtotal = subscriptionCartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const durationDays = Number(pricingPlan.duration_days || 0);
+    const itemsSubtotal = recurringDailySubtotal * durationDays;
+    const discountPercent = Number(pricingPlan.product_discount_percent || 0);
+    const discountAmount = itemsSubtotal * (discountPercent / 100);
+    const planFee = usingExistingPlan ? 0 : Number(pricingPlan.price || 0);
+    const totalAmount = Math.max(0, itemsSubtotal - discountAmount + planFee);
+
+    return {
+      recurringDailySubtotal,
+      durationDays,
+      itemsSubtotal,
+      discountPercent,
+      discountAmount,
+      planFee,
+      totalAmount,
+    };
+  }, [activePlan, selectedCartSubscriptionPlan, subscriptionCartItems, usingExistingPlan]);
 
   const paymentMethodLabel = useMemo(() => {
     if (paymentData.payment_method === 'upi') return 'UPI';
@@ -130,6 +199,7 @@ function UserDashboard({ authUser }) {
     return 'Card';
   }, [cartPaymentData.payment_method]);
   const [subscriptionActionPrompt, setSubscriptionActionPrompt] = useState(null);
+  const seenAlertIdsRef = useRef(new Set());
 
   const productsByCategory = useMemo(() => {
     const grouped = dashboardData.products.reduce((accumulator, product) => {
@@ -232,6 +302,53 @@ function UserDashboard({ authUser }) {
   }, [authUser?.id, fetchDashboard]);
 
   useEffect(() => {
+    if (!authUser?.id) return;
+    let alive = true;
+    const loadAddresses = async () => {
+      try {
+        const response = await userService.getAddresses();
+        if (!alive) return;
+        const items = Array.isArray(response?.data) ? response.data : [];
+        setDeliveryAddresses(items);
+        const preferred = items.find((address) => address.is_default) || items[0];
+        if (preferred) {
+          setSelectedOrderAddressId(String(preferred.address_id));
+          setSelectedOrderSlot(preferred.delivery_slot || 'morning');
+          setSelectedSubscriptionAddressId(String(preferred.address_id));
+          setSelectedSubscriptionSlot(preferred.delivery_slot || 'morning');
+        }
+      } catch (_error) {
+        if (!alive) return;
+        setDeliveryAddresses([]);
+      }
+    };
+    loadAddresses();
+    return () => { alive = false; };
+  }, [authUser?.id]);
+
+  useEffect(() => {
+    if (!selectedOrderAddressId) return;
+    const selectedAddress = deliveryAddresses.find((address) => String(address.address_id) === String(selectedOrderAddressId));
+    if (selectedAddress?.delivery_slot) {
+      setSelectedOrderSlot(selectedAddress.delivery_slot);
+    }
+  }, [deliveryAddresses, selectedOrderAddressId]);
+
+  useEffect(() => {
+    if (!selectedSubscriptionAddressId) return;
+    const selectedAddress = deliveryAddresses.find((address) => String(address.address_id) === String(selectedSubscriptionAddressId));
+    if (selectedAddress?.delivery_slot) {
+      setSelectedSubscriptionSlot(selectedAddress.delivery_slot);
+    }
+  }, [deliveryAddresses, selectedSubscriptionAddressId]);
+
+  useEffect(() => {
+    setCartHydrated(false);
+    setIntentHandled(false);
+    setCartItems([]);
+  }, [authUser?.id]);
+
+  useEffect(() => {
     const preferredPanel = window.localStorage.getItem('mm_user_active_panel');
     if (preferredPanel) {
       setActivePanel(preferredPanel);
@@ -240,7 +357,75 @@ function UserDashboard({ authUser }) {
   }, []);
 
   useEffect(() => {
+    if (!authUser?.id || loading || cartHydrated) return;
+    if (!cartStorageKey) {
+      setCartHydrated(true);
+      return;
+    }
+
+    let storedItems = [];
+    try {
+      storedItems = JSON.parse(window.localStorage.getItem(cartStorageKey) || '[]');
+    } catch (_error) {
+      storedItems = [];
+    }
+
+    if (!Array.isArray(storedItems) || storedItems.length === 0) {
+      setCartHydrated(true);
+      return;
+    }
+
+    const productsById = new Map(
+      dashboardData.products.map((product) => [Number(product.product_id), product]),
+    );
+    const productsByName = new Map(
+      dashboardData.products.map((product) => [normalizeName(product.name), product]),
+    );
+
+    const hydratedStoredItems = storedItems.map((item, index) => {
+      const requestedName = item?.name || '';
+      const requestedProductId = Number(item?.product_id);
+      const matchedProduct = productsById.get(requestedProductId)
+        || productsByName.get(normalizeName(requestedName));
+      const qty = Math.max(1, Number(item?.quantity || item?.qty) || 1);
+
+      if (matchedProduct) {
+        return {
+          product_id: matchedProduct.product_id,
+          name: matchedProduct.name,
+          price: parsePrice(matchedProduct.price),
+          quantity: qty,
+          unavailable: false,
+          requires_subscription: Boolean(matchedProduct.subscription_only),
+        };
+      }
+
+      return {
+        product_id: item?.product_id || `stored-missing-${normalizeName(requestedName)}-${index}`,
+        name: requestedName || 'Unknown Product',
+        price: parsePrice(item?.price),
+        quantity: qty,
+        unavailable: true,
+        requires_subscription: Boolean(item?.requires_subscription),
+      };
+    });
+
+    setCartItems(hydratedStoredItems);
+    setCartHydrated(true);
+  }, [authUser?.id, cartHydrated, cartStorageKey, dashboardData.products, loading]);
+
+  useEffect(() => {
+    if (!cartHydrated || !cartStorageKey) return;
+    if (!cartItems.length) {
+      window.localStorage.removeItem(cartStorageKey);
+      return;
+    }
+    window.localStorage.setItem(cartStorageKey, JSON.stringify(cartItems));
+  }, [cartHydrated, cartItems, cartStorageKey]);
+
+  useEffect(() => {
     if (intentHandled || !authUser?.id) return;
+    if (!cartHydrated) return;
     const rawIntent = window.localStorage.getItem('mm_pending_checkout_cart');
     if (!rawIntent) {
       setIntentHandled(true);
@@ -326,7 +511,7 @@ function UserDashboard({ authUser }) {
 
     window.localStorage.removeItem('mm_pending_checkout_cart');
     setIntentHandled(true);
-  }, [authUser?.id, dashboardData.products, intentHandled, loading]);
+  }, [authUser?.id, cartHydrated, dashboardData.products, intentHandled, loading]);
 
   const pushNotification = (message) => {
     const noteId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -334,7 +519,7 @@ function UserDashboard({ authUser }) {
     setNotifications((prev) => [...prev, notification]);
     setTimeout(() => {
       setNotifications((prev) => prev.filter((note) => note.id !== noteId));
-    }, 10000);
+    }, 3200);
   };
 
   const dismissNotification = (noteId) => {
@@ -358,6 +543,7 @@ function UserDashboard({ authUser }) {
       )),
       '',
       `Subtotal: INR ${successReceipt.subtotal.toFixed(2)}`,
+      `Subscriber Discount: INR ${(successReceipt.discount || 0).toFixed(2)}`,
       `Tax: INR ${successReceipt.tax.toFixed(2)}`,
       `Grand Total: INR ${successReceipt.total.toFixed(2)}`,
       '',
@@ -385,6 +571,35 @@ function UserDashboard({ authUser }) {
     return () => document.removeEventListener('pointerdown', closeOnAnyClick);
   }, [notifications.length]);
 
+  useEffect(() => {
+    if (!authUser?.id) return undefined;
+
+    let cancelled = false;
+    const loadAlerts = async () => {
+      if (document.hidden || window.location.pathname !== '/user/dashboard') return;
+      try {
+        const response = await userService.getNotifications(authUser.id, { limit: 3 });
+        if (cancelled) return;
+        const items = Array.isArray(response?.data?.results) ? response.data.results : [];
+        items.slice(0, 3).forEach((note) => {
+          const alertId = `server-${note.notification_id}`;
+          if (seenAlertIdsRef.current.has(alertId)) return;
+          seenAlertIdsRef.current.add(alertId);
+          pushNotification(note.title || note.message || 'New alert received');
+        });
+      } catch (_error) {
+        // Non-blocking: dashboard should not fail if alert polling fails.
+      }
+    };
+
+    loadAlerts();
+    const intervalId = window.setInterval(loadAlerts, 300000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [authUser?.id]);
+
   const handleNotificationGoToCart = (noteId) => {
     dismissNotification(noteId);
     setCartOpen(true);
@@ -393,6 +608,10 @@ function UserDashboard({ authUser }) {
   const handleSubscribe = async (event) => {
     event.preventDefault();
     if (!selectedPlan) return;
+    if (!selectedSubscriptionAddressId) {
+      setError('Select a delivery address for the subscription');
+      return;
+    }
 
     setSubmitting(true);
     setError('');
@@ -405,7 +624,20 @@ function UserDashboard({ authUser }) {
         customer_id: authUser.id,
         subscription_id: selectedPlan.subscription_id,
         payment_method: paymentData.payment_method,
+        address_id: selectedSubscriptionAddressId,
+        delivery_slot: selectedSubscriptionSlot,
       };
+      const selectedCartSubscriptionItems = subscriptionCartItems
+        .filter((item) => !item.unavailable)
+        .map((item) => ({
+          product_id: item.product_id,
+          quantity: item.quantity,
+          frequency: 'daily',
+        }));
+
+      if (selectedCartSubscriptionItems.length > 0 && !activeSubscription) {
+        payload.basket_items = selectedCartSubscriptionItems;
+      }
 
       if (paymentData.payment_method === 'card') {
         payload.card_holder = paymentData.card_holder;
@@ -420,7 +652,7 @@ function UserDashboard({ authUser }) {
 
       const response = await userService.subscribe(payload);
       const paidAt = response?.data?.payment?.paid_at || new Date().toISOString();
-      const amount = parsePrice(selectedPlanSnapshot.price);
+      const amount = Number(cartSubscriptionQuote?.totalAmount ?? parsePrice(selectedPlanSnapshot.price));
       const reference = (
         response?.data?.payment?.transaction_reference
         || response?.data?.transaction_reference
@@ -435,7 +667,9 @@ function UserDashboard({ authUser }) {
       setSuccessReceipt({
         type: 'subscription',
         title: 'Subscription Activated',
-        subtitle: 'Payment completed successfully. Your subscription is now active.',
+        subtitle: selectedCartSubscriptionItems.length > 0
+          ? 'Payment completed successfully. Your plan is active and recurring delivery items were added.'
+          : 'Payment completed successfully. Your subscription is now active.',
         customerName: authUser?.first_name || authUser?.username || 'MilkMan User',
         receiptNo,
         transactionReference: reference,
@@ -457,6 +691,12 @@ function UserDashboard({ authUser }) {
       setSuccess(response.data?.message || 'Payment successful');
       setSelectedPlan(null);
       setPaymentData(paymentTemplate);
+      setCartSubscriptionPlanId('');
+      setSubscriptionPlanChooserOpen(false);
+      if (selectedCartSubscriptionItems.length > 0) {
+        setCartItems((previous) => previous.filter((item) => !item.requires_subscription));
+        setCartOpen(false);
+      }
       await fetchDashboard();
     } catch (apiError) {
       const data = apiError?.response?.data;
@@ -503,7 +743,11 @@ function UserDashboard({ authUser }) {
       if (itemExists) {
         return previous.map((item) => (
           item.product_id === product.product_id
-            ? { ...item, quantity: item.quantity + 1 }
+            ? {
+              ...item,
+              quantity: item.quantity + 1,
+              requires_subscription: Boolean(product.subscription_only),
+            }
             : item
         ));
       }
@@ -515,6 +759,7 @@ function UserDashboard({ authUser }) {
           price: parsePrice(product.price),
           quantity: 1,
           unavailable: false,
+          requires_subscription: Boolean(product.subscription_only),
         },
       ];
     });
@@ -593,6 +838,15 @@ function UserDashboard({ authUser }) {
   };
 
   const handleProductSubscribe = () => {
+    if (cartOpen && subscriptionCartItems.length > 0 && !activeSubscription) {
+      setSubscriptionPlanChooserOpen(true);
+      if (!cartSubscriptionPlanId) {
+        const preferredPlan = dashboardData.subscriptions.find((plan) => ['monthly', 'yearly'].includes(plan.billing_cycle));
+        if (preferredPlan) setCartSubscriptionPlanId(String(preferredPlan.subscription_id));
+      }
+      return;
+    }
+
     setCartOpen(false);
     setCartCheckoutOpen(false);
     setActivePanel('subscription');
@@ -601,41 +855,102 @@ function UserDashboard({ authUser }) {
     }
   };
 
-  const closeCartBoxes = () => {
-    setCartOpen(false);
-    setCartCheckoutOpen(false);
-  };
+  const handleGetSubscriptionFromCart = async () => {
+    setError('');
+    setSuccess('');
 
-  const handleOpenCartCheckout = () => {
-    if (cartItems.length === 0) {
-      setError('Add products to cart before checkout');
+    if (subscriptionCartItems.length === 0) {
+      setCartWarning('Only products marked as subscription eligible by admin can be added to a delivery plan.');
+      setTimeout(() => setCartWarning(''), 2500);
       return;
     }
-    const subscriptionOnlyLines = cartItems.filter((item) => item.requires_subscription);
-    if (subscriptionOnlyLines.length > 0) {
-      setCartWarning('Some items require subscription delivery. Add them to your plan basket to continue.');
-      setTimeout(() => setCartWarning(''), 2500);
-      setCartCheckoutOpen(false);
-      setActivePanel('subscription');
-      if (plansRef.current) {
-        plansRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    setSubscriptionPlanChooserOpen(true);
+    if (activeSubscription) {
+      setCartSubscriptionPlanId('existing-plan');
+      return;
+    }
+    if (!cartSubscriptionPlanId) {
+      const preferredPlan = dashboardData.subscriptions.find((plan) => ['monthly', 'yearly'].includes(plan.billing_cycle));
+      if (preferredPlan) setCartSubscriptionPlanId(String(preferredPlan.subscription_id));
+    }
+  };
+
+  const handleContinueSubscriptionChoice = async () => {
+    if (subscriptionCartItems.length === 0) {
+      setCartWarning('Add at least one subscription eligible product first.');
+      setTimeout(() => setCartWarning(''), 2200);
+      return;
+    }
+
+    if (usingExistingPlan && activeSubscription) {
+      setError('');
+      setSuccess('');
+      try {
+        for (const item of subscriptionCartItems) {
+          await userService.upsertSubscriptionBasket(authUser?.id, {
+            product: item.product_id,
+            quantity: item.quantity,
+            frequency: 'daily',
+          });
+        }
+
+        const refreshedBasket = await userService.getSubscriptionBasket(authUser?.id);
+        setDashboardData((prev) => ({
+          ...prev,
+          subscription_basket: refreshedBasket.data || [],
+        }));
+        setCartItems((previous) => previous.filter((item) => !item.requires_subscription));
+        setSubscriptionPlanChooserOpen(false);
+        setCartSubscriptionPlanId('');
+        setCartOpen(false);
+        setActivePanel('subscription');
+        setSuccess('Selected items were added to your existing subscription plan.');
+      } catch (apiError) {
+        setError(apiError?.response?.data?.error || 'Failed to add items to existing plan');
       }
       return;
     }
-    const unavailableItems = cartItems.filter((item) => item.unavailable);
-    if (unavailableItems.length > 0) {
-      setCartWarning('Remove unavailable items before checkout.');
-      setTimeout(() => setCartWarning(''), 2000);
+
+    if (!selectedCartSubscriptionPlan) {
+      setCartWarning('Select Monthly or Yearly to continue.');
+      setTimeout(() => setCartWarning(''), 2200);
+      return;
+    }
+
+    setSelectedPlan(selectedCartSubscriptionPlan);
+  };
+
+  const closeCartBoxes = () => {
+    setCartOpen(false);
+    setCartCheckoutOpen(false);
+    setSubscriptionPlanChooserOpen(false);
+    setCartSubscriptionPlanId('');
+  };
+
+  const handleOpenCartCheckout = () => {
+    if (oneTimeCartItems.length === 0) {
+      setCartWarning('Add at least one one-time item to use Order Now.');
+      setTimeout(() => setCartWarning(''), 2200);
       return;
     }
     setError('');
     setCartCheckoutOpen(true);
+    if (subscriptionCartItems.length > 0) {
+      setCartWarning('Subscription-eligible items will stay in cart until you move them into a delivery plan.');
+      setTimeout(() => setCartWarning(''), 2600);
+    }
   };
 
   const handleCartCheckoutPayment = async (event) => {
     event.preventDefault();
     setError('');
     setSuccess('');
+
+    if (!selectedOrderAddressId) {
+      setError('Select a delivery address for this order');
+      return;
+    }
 
     if (cartPaymentData.payment_method === 'cod') {
       // No validation required for Cash on Delivery.
@@ -656,7 +971,7 @@ function UserDashboard({ authUser }) {
 
     setCartCheckoutSubmitting(true);
     try {
-      const availableCartItems = cartItems.filter((item) => !item.unavailable && !item.requires_subscription);
+      const availableCartItems = cartItems.filter((item) => !item.unavailable);
       const checkoutItems = availableCartItems.map((item) => ({ ...item }));
       const cartPaymentSnapshot = { ...cartPaymentData };
       if (availableCartItems.length === 0) {
@@ -671,6 +986,9 @@ function UserDashboard({ authUser }) {
           quantity: item.quantity,
         })),
         payment_method: cartPaymentData.payment_method,
+        address_id: selectedOrderAddressId,
+        delivery_slot: selectedOrderSlot,
+        delivery_date: selectedOrderDate,
       };
 
       if (cartPaymentData.payment_method === 'card') {
@@ -691,7 +1009,10 @@ function UserDashboard({ authUser }) {
         || response?.data?.order?.transaction_reference
         || (orderId ? `MM-ORD-${orderId}` : `MM-ORD-${Date.now()}`)
       );
-      const subtotal = checkoutItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      const subtotal = Number(response?.data?.order?.subtotal ?? checkoutItems.reduce((sum, item) => sum + (item.price * item.quantity), 0));
+      const discountAmount = Number(response?.data?.order?.discount_amount || 0);
+      const taxAmount = Number(response?.data?.order?.tax_amount || 0);
+      const totalAmount = Number(response?.data?.order?.total_amount || (subtotal - discountAmount + taxAmount));
       const paymentMethod = cartPaymentSnapshot.payment_method === 'upi'
         ? 'UPI'
         : cartPaymentSnapshot.payment_method === 'netbanking'
@@ -716,22 +1037,21 @@ function UserDashboard({ authUser }) {
           lineTotal: item.price * item.quantity,
         })),
         subtotal,
-        tax: 0,
-        total: subtotal,
+        discount: discountAmount,
+        tax: taxAmount,
+        total: totalAmount,
       });
       setCartItems([]);
       setCartPaymentData(cartPaymentTemplate);
       setCartCheckoutOpen(false);
       setCartOpen(false);
-      setSuccess(orderId ? `Order #${orderId} confirmed via ${cartPaymentMethodLabel}` : 'Order confirmed');
+      setSuccess(
+        discountAmount > 0
+          ? `Order #${orderId} confirmed with ${activePlanDiscountPercent}% subscriber discount`
+          : (orderId ? `Order #${orderId} confirmed via ${cartPaymentMethodLabel}` : 'Order confirmed')
+      );
     } catch (apiError) {
       const data = apiError?.response?.data;
-      if (Array.isArray(data?.subscription_only_items) && data.subscription_only_items.length > 0) {
-        setCartWarning('Some items require subscription delivery. Remove them from cart and add to your plan basket.');
-        setTimeout(() => setCartWarning(''), 3000);
-        setCartCheckoutOpen(false);
-        return;
-      }
       setError(data?.reason || data?.error || 'Cart checkout payment failed');
     } finally {
       setCartCheckoutSubmitting(false);
@@ -792,13 +1112,33 @@ function UserDashboard({ authUser }) {
           <div className="floating-box cart-floating" onClick={(event) => event.stopPropagation()}>
             <div className="cart-panel-title">
               <h2>My Cart</h2>
-              <div>Total: INR {cartStats.total.toFixed(2)}</div>
+              <div>
+                Total: INR {cartStats.total.toFixed(2)}
+                {cartDiscountPreview > 0 ? ` | Subscriber saving INR ${cartDiscountPreview.toFixed(2)}` : ''}
+              </div>
             </div>
+            {activeSubscription && activePlanDiscountPercent > 0 && (
+              <div className="cart-subscription-note">
+                <div>
+                  <strong>Subscriber benefit active</strong>
+                  <span>{activePlanDiscountPercent}% off one-time cart items. Plan basket deliveries continue without daily payment.</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeCartBoxes();
+                    setActivePanel('subscription');
+                  }}
+                >
+                  View Plan
+                </button>
+              </div>
+            )}
             {!activeSubscription && (
               <div className="cart-subscription-note">
                 <div>
-                  <strong>Subscription required</strong>
-                  <span>Activate a plan to checkout and schedule deliveries.</span>
+                  <strong>Why use a subscription?</strong>
+                  <span>Use a plan for scheduled dairy delivery, no daily payment on plan items, and a small discount on add-on purchases.</span>
                 </div>
                 <button type="button" onClick={handleProductSubscribe}>Choose Plan</button>
               </div>
@@ -809,45 +1149,211 @@ function UserDashboard({ authUser }) {
               <div className="subscription-empty">Your cart is empty.</div>
             ) : (
               <div className="cart-items">
-                {cartItems.map((item) => (
-                  <div key={item.product_id} className={`cart-item ${item.unavailable ? 'unavailable' : ''}`}>
-                    <div className="cart-item-main">
-                      <div className="cart-item-name-row">
-                        <strong>{item.name}</strong>
-                        <span className="cart-item-qty">Qty {item.quantity}</span>
-                      </div>
-                      <div className="cart-item-price">
-                        {item.unavailable ? 'Unavailable' : `INR ${(item.price * item.quantity).toFixed(2)}`}
-                      </div>
-                      {item.requires_subscription && (
-                        <div className="unavailable-note">Requires subscription delivery</div>
-                      )}
-                      {item.unavailable && <div className="unavailable-note">Currently unavailable</div>}
+                {oneTimeCartItems.length > 0 && (
+                  <section className="cart-group">
+                    <div className="cart-group-title">Cart items</div>
+                    <div className="cart-group-subtitle">
+                      Order these now, or move subscription eligible dairy products into an existing, monthly, or yearly delivery plan.
                     </div>
-                    <div className="cart-actions">
-                      <button type="button" className="cart-remove-btn" onClick={() => handleRemoveFromCart(item.product_id)}>
-                        Remove
-                      </button>
+                    {oneTimeCartItems.map((item) => (
+                      <div key={item.product_id} className={`cart-item ${item.requires_subscription ? 'subscription-item' : ''}`}>
+                        <div className="cart-item-main">
+                          <div className="cart-item-name-row">
+                            <strong>{item.name}</strong>
+                            <span className="cart-item-qty">Qty {item.quantity}</span>
+                          </div>
+                          <div className="cart-item-price">INR {(item.price * item.quantity).toFixed(2)}</div>
+                          <div className="cart-line-hint">
+                            {item.requires_subscription
+                              ? 'Subscription eligible: can be ordered now or added to a recurring plan.'
+                              : 'One-time order item.'}
+                          </div>
+                        </div>
+                        <div className="cart-actions">
+                          <button type="button" className="cart-remove-btn" onClick={() => handleRemoveFromCart(item.product_id)}>
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </section>
+                )}
+                {unavailableCartItems.length > 0 && (
+                  <section className="cart-group">
+                    <div className="cart-group-title">Unavailable items</div>
+                    <div className="cart-group-subtitle">
+                      These lines are kept only for review. Remove them before relying on this cart.
+                    </div>
+                    {unavailableCartItems.map((item) => (
+                      <div key={item.product_id} className="cart-item unavailable">
+                        <div className="cart-item-main">
+                          <div className="cart-item-name-row">
+                            <strong>{item.name}</strong>
+                            <span className="cart-item-qty">Qty {item.quantity}</span>
+                          </div>
+                          <div className="cart-item-price">Unavailable</div>
+                          <div className="unavailable-note">Currently unavailable</div>
+                        </div>
+                        <div className="cart-actions">
+                          <button type="button" className="cart-remove-btn" onClick={() => handleRemoveFromCart(item.product_id)}>
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </section>
+                )}
+              </div>
+            )}
+
+            {subscriptionPlanChooserOpen && subscriptionCartItems.length > 0 && (
+              <div className="cart-subscription-builder">
+                <div className="cart-group-title">Choose your recurring delivery plan</div>
+                <div className="cart-group-subtitle">
+                  Select a plan first. After payment, these items will move into your active subscription and appear in the activate/deactivate section.
+                </div>
+                <label className="cart-plan-select">
+                  <span>Subscription plan</span>
+                  <select
+                    value={cartSubscriptionPlanId}
+                    onChange={(event) => setCartSubscriptionPlanId(event.target.value)}
+                  >
+                    <option value="">Select a plan</option>
+                    {activeSubscription && <option value="existing-plan">Use existing active plan</option>}
+                    {dashboardData.subscriptions.filter((plan) => ['monthly', 'yearly'].includes(plan.billing_cycle)).map((plan) => (
+                      <option key={plan.subscription_id} value={plan.subscription_id}>
+                        {plan.name} - INR {plan.price}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                {cartSubscriptionQuote && (
+                  <div className="cart-plan-summary">
+                    <div className="cart-plan-summary-row">
+                      <span>Recurring items selected</span>
+                      <strong>{subscriptionCartItems.length} products</strong>
+                    </div>
+                    <div className="cart-plan-summary-row">
+                      <span>Daily basket total</span>
+                      <strong>INR {cartSubscriptionQuote.recurringDailySubtotal.toFixed(2)}</strong>
+                    </div>
+                    <div className="cart-plan-summary-row">
+                      <span>Plan duration</span>
+                      <strong>{cartSubscriptionQuote.durationDays} days</strong>
+                    </div>
+                    <div className="cart-plan-summary-row">
+                      <span>Recurring items total</span>
+                      <strong>INR {cartSubscriptionQuote.itemsSubtotal.toFixed(2)}</strong>
+                    </div>
+                    <div className="cart-plan-summary-row">
+                      <span>Discount</span>
+                      <strong>INR {cartSubscriptionQuote.discountAmount.toFixed(2)}</strong>
+                    </div>
+                    <div className="cart-plan-summary-row">
+                      <span>{usingExistingPlan ? 'Plan fee' : 'New plan fee'}</span>
+                      <strong>INR {cartSubscriptionQuote.planFee.toFixed(2)}</strong>
+                    </div>
+                    <div className="cart-plan-summary-row highlight">
+                      <span>Payable today</span>
+                      <strong>INR {cartSubscriptionQuote.totalAmount.toFixed(2)}</strong>
                     </div>
                   </div>
-                ))}
+                )}
+
+                <div className="cart-plan-actions">
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    onClick={() => {
+                      setSubscriptionPlanChooserOpen(false);
+                      setCartSubscriptionPlanId('');
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!usingExistingPlan && !selectedCartSubscriptionPlan}
+                    onClick={handleContinueSubscriptionChoice}
+                  >
+                    {usingExistingPlan ? 'Add To Existing Plan' : 'Continue To Payment'}
+                  </button>
+                </div>
               </div>
             )}
 
             <div className="cart-footer">
               <button type="button" className="ghost-btn" onClick={closeCartBoxes}>Close</button>
-              <button type="button" onClick={handleOpenCartCheckout} disabled={cartItems.length === 0}>
-                Checkout & Payment Gateway
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={handleGetSubscriptionFromCart}
+              >
+                Get Subscription
+              </button>
+              <button type="button" onClick={handleOpenCartCheckout} disabled={oneTimeCartItems.length === 0}>
+                Order Now
               </button>
             </div>
           </div>
 
           {cartCheckoutOpen && (
             <div className="floating-box checkout-floating" onClick={(event) => event.stopPropagation()}>
-              <h2>Cart Checkout</h2>
-              <p>Pay INR {cartStats.total.toFixed(2)} using {cartPaymentMethodLabel}</p>
+              <h2>Order Now</h2>
+              <p>
+                Pay INR {oneTimeCartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0).toFixed(2)}
+                {' '}using {cartPaymentMethodLabel}
+              </p>
 
               <form className="payment-form" onSubmit={handleCartCheckoutPayment}>
+                {deliveryAddresses.length === 0 ? (
+                  <div className="subscription-empty">
+                    Add a delivery address in Profile before placing an order.
+                  </div>
+                ) : (
+                  <>
+                    <label>
+                      Delivery Address
+                      <select
+                        value={selectedOrderAddressId}
+                        onChange={(event) => setSelectedOrderAddressId(event.target.value)}
+                        required
+                      >
+                        <option value="">Select delivery address</option>
+                        {deliveryAddresses.map((address) => (
+                          <option key={address.address_id} value={address.address_id}>
+                            {address.label || address.address_type || 'Address'} - {address.address_line1}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <div className="payment-row">
+                      <label>
+                        Delivery Date
+                        <input
+                          type="date"
+                          value={selectedOrderDate}
+                          min={new Date().toISOString().slice(0, 10)}
+                          onChange={(event) => setSelectedOrderDate(event.target.value)}
+                          required
+                        />
+                      </label>
+                      <label>
+                        Delivery Slot
+                        <select
+                          value={selectedOrderSlot}
+                          onChange={(event) => setSelectedOrderSlot(event.target.value)}
+                        >
+                          <option value="morning">Morning</option>
+                          <option value="evening">Evening</option>
+                        </select>
+                      </label>
+                    </div>
+                  </>
+                )}
+
                 <label>
                   Payment Method
                   <select
@@ -927,8 +1433,8 @@ function UserDashboard({ authUser }) {
                 )}
 
                 <div className="payment-actions">
-                  <button type="submit" disabled={cartCheckoutSubmitting}>
-                    {cartCheckoutSubmitting ? 'Processing...' : `Pay INR ${cartStats.total.toFixed(2)}`}
+                  <button type="submit" disabled={cartCheckoutSubmitting || deliveryAddresses.length === 0}>
+                    {cartCheckoutSubmitting ? 'Processing...' : `Pay INR ${oneTimeCartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0).toFixed(2)}`}
                   </button>
                   <button type="button" className="ghost-btn" onClick={() => setCartCheckoutOpen(false)}>
                     Back to Cart
@@ -1032,7 +1538,7 @@ function UserDashboard({ authUser }) {
               </article>
               <article className="welcome-info-card">
                 <h4>Recommended Next Step</h4>
-                <p>{activeSubscription ? 'Review your latest payment records and manage renewals.' : 'Activate a subscription plan to unlock full order flow.'}</p>
+                <p>{activeSubscription ? 'Review your latest payment records and plan renewals.' : 'Activate a subscription plan for scheduled delivery and subscriber savings on one-time add-ons.'}</p>
               </article>
             </div>
           </section>
@@ -1065,7 +1571,7 @@ function UserDashboard({ authUser }) {
                       <article key={product.product_id} className="featured-card" role="listitem">
                         <div className="featured-card-top">
                           <div className="featured-badge">{product.category_name || 'General'}</div>
-                          {isSubscriptionOnly && <div className="featured-tag">Plan</div>}
+                          {isSubscriptionOnly && <div className="featured-tag">Subscription Available</div>}
                         </div>
 
                         <div className="featured-media" aria-hidden="true">
@@ -1082,11 +1588,7 @@ function UserDashboard({ authUser }) {
                         </div>
 
                         <div className="featured-actions">
-                          {isSubscriptionOnly ? (
-                            <button type="button" onClick={() => handleAddToSubscriptionBasket(product)}>
-                              Add to Plan
-                            </button>
-                          ) : qty > 0 ? (
+                          {qty > 0 ? (
                             <div className="qty-stepper" aria-label={`Quantity controls for ${product.name}`}>
                               <button type="button" className="qty-btn" onClick={() => handleDecreaseCartQty(product.product_id)} aria-label="Decrease quantity">−</button>
                               <span className="qty-count" aria-label="Quantity">{qty}</span>
@@ -1115,13 +1617,13 @@ function UserDashboard({ authUser }) {
                   <div className="extras-head">
                     <h3>Delivery & Basket</h3>
                     <span className={`extras-pill ${activeSubscription ? 'good' : 'warn'}`}>
-                      {activeSubscription ? 'Active plan' : 'Plan needed'}
+                      {activeSubscription ? 'Active plan' : 'Delivery plan optional'}
                     </span>
                   </div>
                   <p>
                     {activeSubscription
                       ? `You have ${subscriptionBasketCount} item(s) in your plan basket. Review deliveries and pause anytime.`
-                      : 'Activate a subscription plan to schedule deliveries and checkout your cart.'}
+                      : 'Activate a plan for scheduled dairy delivery, while one-time products can still be ordered separately.'}
                   </p>
                   <div className="extras-actions">
                     <button type="button" onClick={() => navigate('/user/delivery')}>Open Delivery</button>
@@ -1252,6 +1754,12 @@ function UserDashboard({ authUser }) {
                     <p>{plan.description || 'No description provided.'}</p>
                     <div className="plan-price">INR {plan.price}</div>
                     <div className="plan-meta">{plan.duration_days} days | {plan.billing_cycle}</div>
+                    <div className="plan-meta">{plan.product_discount_percent}% off one-time add-on orders</div>
+                    <div className="plan-meta">
+                      {plan.includes_delivery_scheduling ? 'Scheduled delivery included' : 'Manual delivery planning'}
+                      {' | '}
+                      {plan.suppress_daily_payments ? 'No daily payment for plan basket items' : 'Daily payments may apply'}
+                    </div>
                     <button type="button" onClick={() => setSelectedPlan(plan)}>
                       Subscribe
                     </button>
@@ -1263,9 +1771,9 @@ function UserDashboard({ authUser }) {
             <section className="user-section panel-slide">
               <h2>Subscription Basket</h2>
               {!activeSubscription ? (
-                <div className="subscription-empty">Activate a plan to schedule subscription deliveries.</div>
+                <div className="subscription-empty">Activate a plan to schedule daily dairy deliveries, avoid daily payment on plan items, and unlock subscriber pricing on one-time add-ons.</div>
               ) : (dashboardData.subscription_basket || []).length === 0 ? (
-                <div className="subscription-empty">No subscription items yet. Add milk items using "Add To Plan".</div>
+                <div className="subscription-empty">No plan items yet. Add subscription-eligible products to cart, then use Get Subscription to move them into a recurring delivery plan.</div>
               ) : (
                 <div className="added-list">
                   {(dashboardData.subscription_basket || []).map((item) => (
@@ -1329,25 +1837,12 @@ function UserDashboard({ authUser }) {
                               <small>Inclusive of all taxes</small>
                             </div>
                             {product.subscription_only && (
-                              <div className="product-meta">Subscription delivery</div>
+                              <div className="product-meta">Subscription available</div>
                             )}
                           </div>
                           <div className="product-actions">
-                            {product.subscription_only ? (
-                              <>
-                                <button type="button" onClick={() => handleAddToSubscriptionBasket(product)}>
-                                  Add To Plan
-                                </button>
-                                <button type="button" className="ghost-btn" onClick={handleProductSubscribe}>
-                                  View Plans
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <button type="button" onClick={() => handleAddToCart(product)}>Add To Cart</button>
-                                <button type="button" className="ghost-btn" onClick={() => setCartOpen(true)}>Open Cart</button>
-                              </>
-                            )}
+                            <button type="button" onClick={() => handleAddToCart(product)}>Add To Cart</button>
+                            <button type="button" className="ghost-btn" onClick={() => setCartOpen(true)}>Open Cart</button>
                           </div>
                         </div>
                       ))}
@@ -1429,10 +1924,73 @@ function UserDashboard({ authUser }) {
               </button>
             </div>
             <p>
-              Paying for: <strong>{selectedPlan.name}</strong> (INR {selectedPlan.price}) via {paymentMethodLabel}
+              Paying for: <strong>{selectedPlan.name}</strong> (INR {(cartSubscriptionQuote?.totalAmount ?? Number(selectedPlan.price || 0)).toFixed(2)}) via {paymentMethodLabel}
             </p>
+            {!activeSubscription && subscriptionCartItems.length > 0 && (
+              <div className="cart-plan-summary compact">
+                <div className="cart-plan-summary-row">
+                  <span>Recurring items after payment</span>
+                  <strong>{subscriptionCartItems.length} products</strong>
+                </div>
+                <div className="cart-plan-summary-row">
+                  <span>Plan validity</span>
+                  <strong>{selectedPlan.duration_days} days</strong>
+                </div>
+                {cartSubscriptionQuote && (
+                  <>
+                    <div className="cart-plan-summary-row">
+                      <span>Recurring items total</span>
+                      <strong>INR {cartSubscriptionQuote.itemsSubtotal.toFixed(2)}</strong>
+                    </div>
+                    <div className="cart-plan-summary-row">
+                      <span>Discount</span>
+                      <strong>INR {cartSubscriptionQuote.discountAmount.toFixed(2)}</strong>
+                    </div>
+                    <div className="cart-plan-summary-row">
+                      <span>Plan fee</span>
+                      <strong>INR {cartSubscriptionQuote.planFee.toFixed(2)}</strong>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
 
             <form className="payment-form" onSubmit={handleSubscribe}>
+              {deliveryAddresses.length === 0 ? (
+                <div className="subscription-empty">
+                  Add a delivery address in Profile before activating a recurring plan.
+                </div>
+              ) : (
+                <>
+                  <label>
+                    Delivery Address
+                    <select
+                      value={selectedSubscriptionAddressId}
+                      onChange={(event) => setSelectedSubscriptionAddressId(event.target.value)}
+                      required
+                    >
+                      <option value="">Select delivery address</option>
+                      {deliveryAddresses.map((address) => (
+                        <option key={address.address_id} value={address.address_id}>
+                          {address.label || address.address_type || 'Address'} - {address.address_line1}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label>
+                    Delivery Slot
+                    <select
+                      value={selectedSubscriptionSlot}
+                      onChange={(event) => setSelectedSubscriptionSlot(event.target.value)}
+                    >
+                      <option value="morning">Morning</option>
+                      <option value="evening">Evening</option>
+                    </select>
+                  </label>
+                </>
+              )}
+
               <label>
                 Payment Method
                 <select
@@ -1516,8 +2074,8 @@ function UserDashboard({ authUser }) {
               )}
 
               <div className="payment-actions">
-                <button type="submit" disabled={submitting}>
-                  {submitting ? 'Processing...' : `Pay INR ${selectedPlan.price}`}
+                <button type="submit" disabled={submitting || deliveryAddresses.length === 0}>
+                  {submitting ? 'Processing...' : `Pay INR ${(cartSubscriptionQuote?.totalAmount ?? Number(selectedPlan.price || 0)).toFixed(2)}`}
                 </button>
                 <button
                   type="button"
@@ -1542,13 +2100,13 @@ function UserDashboard({ authUser }) {
               <div className="extras-head">
                 <h3>Delivery & Basket</h3>
                 <span className={`extras-pill ${activeSubscription ? 'good' : 'warn'}`}>
-                  {activeSubscription ? 'Active plan' : 'Plan needed'}
+                  {activeSubscription ? 'Active plan' : 'Delivery plan optional'}
                 </span>
               </div>
               <p>
                 {activeSubscription
                   ? `You have ${subscriptionBasketCount} item(s) in your plan basket. Review deliveries and pause anytime.`
-                  : 'Activate a subscription plan to schedule deliveries and checkout your cart.'}
+                  : 'Activate a plan for scheduled dairy delivery, while one-time products can still be ordered separately.'}
               </p>
               <div className="extras-actions">
                 <button type="button" onClick={() => navigate('/user/delivery')}>Open Delivery</button>
@@ -1739,6 +2297,7 @@ function UserDashboard({ authUser }) {
               ))}
               <div className="receipt-total">
                 <div><span>Subtotal</span><strong>INR {successReceipt.subtotal.toFixed(2)}</strong></div>
+                <div><span>Subscriber Discount</span><strong>- INR {(successReceipt.discount || 0).toFixed(2)}</strong></div>
                 <div><span>Tax</span><strong>INR {successReceipt.tax.toFixed(2)}</strong></div>
                 <div className="grand"><span>Grand Total</span><strong>INR {successReceipt.total.toFixed(2)}</strong></div>
               </div>

@@ -1,7 +1,7 @@
 .page {
   width: 100%;
 }
-
+your are chage al ootheb
 .form {
   display: flex;
   flex-direction: column;
@@ -126,6 +126,112 @@
   background-color: #ee5a52;
 }
 
+.product-feedback {
+  position: relative;
+  overflow: hidden;
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top right, rgba(126, 91, 255, 0.14), transparent 35%),
+    linear-gradient(145deg, #f8fbff 0%, #eef6f4 100%);
+  border: 1px solid rgba(57, 125, 46, 0.18);
+  box-shadow: 0 24px 60px rgba(20, 36, 26, 0.14);
+}
+
+.product-feedback-accent {
+  height: 6px;
+  background: linear-gradient(90deg, #2d5b2a 0%, #3f8a36 42%, #7b63df 100%);
+}
+
+.product-feedback-shell {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  padding: 26px 26px 10px;
+}
+
+.product-feedback-icon {
+  min-width: 64px;
+  height: 64px;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 1.2px;
+  color: #17341c;
+  background: linear-gradient(180deg, rgba(63, 138, 54, 0.18), rgba(63, 138, 54, 0.08));
+  border: 1px solid rgba(63, 138, 54, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+.product-feedback-icon.warning {
+  color: #6e4f00;
+  background: linear-gradient(180deg, rgba(255, 196, 79, 0.28), rgba(255, 196, 79, 0.1));
+  border-color: rgba(255, 196, 79, 0.32);
+}
+
+.product-feedback-icon.error {
+  color: #7b1f25;
+  background: linear-gradient(180deg, rgba(255, 107, 107, 0.22), rgba(255, 107, 107, 0.08));
+  border-color: rgba(255, 107, 107, 0.28);
+}
+
+.product-feedback-copy {
+  flex: 1;
+}
+
+.product-feedback-kicker {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #2e6d2b;
+  background: rgba(63, 138, 54, 0.12);
+}
+
+.product-feedback-copy h3 {
+  margin: 0 0 10px;
+  font-size: 28px;
+  line-height: 1.05;
+  color: #1f2a37;
+}
+
+.product-feedback-copy p {
+  margin: 0;
+  color: #506172;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.product-feedback-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  padding: 0 26px 24px;
+}
+
+.product-feedback-actions .btn {
+  min-width: 140px;
+  border-radius: 999px;
+  padding-inline: 24px;
+}
+
+.btn-delete-anyway {
+  background: linear-gradient(145deg, #3e2f64 0%, #3d7c2f 100%);
+  color: #fff;
+  box-shadow: 0 12px 28px rgba(48, 72, 114, 0.28);
+}
+
+.btn-delete-anyway:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 32px rgba(48, 72, 114, 0.34);
+}
+
 @keyframes slideUp {
   from {
     opacity: 0;
@@ -134,5 +240,28 @@
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@media (max-width: 640px) {
+  .product-feedback-shell {
+    flex-direction: column;
+    padding: 22px 18px 10px;
+  }
+
+  .product-feedback-copy h3 {
+    font-size: 24px;
+  }
+
+  .product-feedback-actions {
+    padding: 0 18px 18px;
+  }
+
+  .product-feedback-actions .btn {
+    width: 100%;
+  }
+
+  .product-feedback-actions {
+    flex-direction: column;
   }
 }

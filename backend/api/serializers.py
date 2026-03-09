@@ -5,6 +5,7 @@ from .models import (
     PaymentTransaction, Order, OrderItem, OrderPayment,
     CustomerAddress,
     AdminSignupApplication,
+    UserNotification,
 )
 
 
@@ -76,7 +77,8 @@ class SubscriptionSerializer(serializers.ModelSerializer):
         model = Subscription
         fields = [
             'subscription_id', 'name', 'description', 'price', 'billing_cycle',
-            'duration_days', 'max_products', 'features', 'is_active',
+            'duration_days', 'product_discount_percent', 'includes_delivery_scheduling',
+            'suppress_daily_payments', 'max_products', 'features', 'is_active',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['subscription_id', 'created_at', 'updated_at']
@@ -210,12 +212,15 @@ class SubscriptionDeliveryItemSerializer(serializers.ModelSerializer):
 class SubscriptionDeliverySerializer(serializers.ModelSerializer):
     items = SubscriptionDeliveryItemSerializer(many=True, read_only=True)
     customer_name = serializers.SerializerMethodField()
+    delivery_address_label = serializers.CharField(source='delivery_address.label', read_only=True)
+    delivery_address_line1 = serializers.CharField(source='delivery_address.line1', read_only=True)
 
     class Meta:
         model = SubscriptionDelivery
         fields = [
             'delivery_id', 'customer', 'customer_name', 'subscription',
-            'scheduled_for', 'status', 'delivered_at', 'notes',
+            'delivery_address', 'delivery_address_label', 'delivery_address_line1',
+            'delivery_slot', 'scheduled_for', 'status', 'delivered_at', 'notes',
             'created_at', 'updated_at', 'items',
         ]
         read_only_fields = ['delivery_id', 'created_at', 'updated_at', 'customer_name', 'items']
@@ -246,10 +251,22 @@ class CustomerAddressSerializer(serializers.ModelSerializer):
         fields = [
             'address_id', 'customer',
             'label', 'line1', 'line2', 'city', 'state', 'postal_code', 'country',
-            'is_default',
+            'delivery_slot', 'is_default',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['address_id', 'customer', 'created_at', 'updated_at']
+
+
+class UserNotificationSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+
+    class Meta:
+        model = UserNotification
+        fields = [
+            'notification_id', 'notification_type', 'title', 'message',
+            'product', 'product_name', 'metadata', 'is_read', 'created_at',
+        ]
+        read_only_fields = fields
 
 
 class PaymentTransactionSerializer(serializers.ModelSerializer):
@@ -281,12 +298,18 @@ class OrderItemSerializer(serializers.ModelSerializer):
 class OrderSerializer(serializers.ModelSerializer):
     customer_name = serializers.SerializerMethodField()
     items = OrderItemSerializer(many=True, read_only=True)
+    delivery_address_label = serializers.CharField(source='delivery_address.label', read_only=True)
+    delivery_address_line1 = serializers.CharField(source='delivery_address.line1', read_only=True)
 
     class Meta:
         model = Order
         fields = [
-            'order_id', 'customer', 'customer_name', 'subtotal', 'tax_amount',
-            'total_amount', 'currency', 'status', 'created_at', 'updated_at', 'items'
+            'order_id', 'customer', 'customer_name',
+            'delivery_address', 'delivery_address_label', 'delivery_address_line1',
+            'delivery_date', 'delivery_slot',
+            'subtotal', 'discount_amount', 'tax_amount',
+            'total_amount', 'currency', 'status', 'delivered_at',
+            'created_at', 'updated_at', 'items'
         ]
 
     def get_customer_name(self, obj):

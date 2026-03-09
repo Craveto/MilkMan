@@ -5,8 +5,12 @@ from rest_framework.decorators import api_view, action
 from rest_framework.filters import SearchFilter, OrderingFilter
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Q
+from django.db import transaction
+from django.db.models.deletion import ProtectedError
+from django.db.utils import OperationalError, ProgrammingError
 from django.utils import timezone
 from datetime import timedelta
+from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import secrets
 import time
@@ -17,6 +21,7 @@ from .models import (
     Admin, Category, Subscription, Customer, Product, SubscriptionBasketItem,
     CustomerAddress,
     AdminSignupApplication,
+    UserNotification,
     SubscriptionDelivery, SubscriptionDeliveryItem,
     PaymentTransaction,
     Order, OrderItem, OrderPayment
@@ -26,7 +31,7 @@ from .serializers import (
     CustomerSerializer, ProductSerializer, ProductDetailSerializer,
     CustomerDetailSerializer, PaymentTransactionSerializer,
     OrderSerializer, OrderPaymentSerializer, SubscriptionBasketItemSerializer,
-    SubscriptionDeliverySerializer,
+    SubscriptionDeliverySerializer, UserNotificationSerializer,
     CustomerAddressSerializer,
     AdminSignupApplicationSerializer,
 )
@@ -369,7 +374,11 @@ class ProductViewSet(viewsets.ModelViewSet):
     filterset_fields = ['category', 'status', 'is_featured']
 
     def get_queryset(self):
-        return _scoped_products_queryset(self.request)
+        queryset = _scoped_products_queryset(self.request)
+        include_discontinued = str(self.request.query_params.get('include_discontinued') or '').lower()
+        if include_discontinued not in ['1', 'true', 'yes']:
+            queryset = queryset.exclude(status='discontinued')
+        return queryset
 
     def perform_create(self, serializer):
         admin = _resolve_admin_for_request(self.request)
@@ -380,6 +389,40 @@ class ProductViewSet(viewsets.ModelViewSet):
         if self.action == 'retrieve':
             return ProductDetailSerializer
         return self.serializer_class
+
+    def destroy(self, request, *args, **kwargs):
+        product = self.get_object()
+        try:
+            self.perform_destroy(product)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except ProtectedError:
+            return Response(
+                {
+                    "message": "Product is already used in orders or subscriptions. You can discontinue it instead.",
+                    "can_delete_anyway": True,
+                    "requires_discontinue": True,
+                    "product": ProductSerializer(product).data,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+    @action(detail=True, methods=['post'])
+    def delete_anyway(self, request, pk=None):
+        product = self.get_object()
+        admin = _resolve_admin_for_request(request)
+        archive_result = _archive_product_and_notify(product, acting_admin=admin)
+        return Response(
+            {
+                "message": (
+                    f"{product.name} was discontinued by {archive_result['admin_name']} and removed from active subscription baskets."
+                ),
+                "archived": True,
+                "notified_customers": archive_result['affected_customers'],
+                "removed_basket_items": archive_result['removed_basket_items'],
+                "product": ProductSerializer(product).data,
+            },
+            status=status.HTTP_200_OK,
+        )
     
     @action(detail=False, methods=['get'])
     def active_products(self, request):
@@ -434,7 +477,7 @@ class SubscriptionDeliveryViewSet(viewsets.ModelViewSet):
     filter_backends = [SearchFilter, OrderingFilter, DjangoFilterBackend]
     search_fields = ['customer__first_name', 'customer__last_name', 'items__product_name']
     ordering_fields = ['scheduled_for', 'status', 'updated_at']
-    filterset_fields = ['status', 'scheduled_for', 'customer']
+    filterset_fields = ['status', 'scheduled_for', 'customer', 'delivery_slot']
 
     def get_queryset(self):
         admin = _resolve_admin_for_request(self.request)
@@ -445,6 +488,24 @@ class SubscriptionDeliveryViewSet(viewsets.ModelViewSet):
         if admin.role == "super_admin":
             return queryset
         return queryset.filter(customer__owner_admin=admin)
+
+    @action(detail=True, methods=['post'])
+    def mark_packed(self, request, pk=None):
+        if not _resolve_admin_for_request(request):
+            return Response({"error": "Admin authentication required"}, status=status.HTTP_403_FORBIDDEN)
+        delivery = self.get_object()
+        delivery.status = 'packed'
+        delivery.save(update_fields=['status'])
+        return Response({"message": "Marked packed", "delivery": self.get_serializer(delivery).data})
+
+    @action(detail=True, methods=['post'])
+    def mark_out_for_delivery(self, request, pk=None):
+        if not _resolve_admin_for_request(request):
+            return Response({"error": "Admin authentication required"}, status=status.HTTP_403_FORBIDDEN)
+        delivery = self.get_object()
+        delivery.status = 'out_for_delivery'
+        delivery.save(update_fields=['status'])
+        return Response({"message": "Marked out for delivery", "delivery": self.get_serializer(delivery).data})
 
     @action(detail=True, methods=['post'])
     def mark_delivered(self, request, pk=None):
@@ -465,6 +526,61 @@ class SubscriptionDeliveryViewSet(viewsets.ModelViewSet):
         delivery.delivered_at = None
         delivery.save(update_fields=['status', 'delivered_at'])
         return Response({"message": "Marked missed", "delivery": self.get_serializer(delivery).data})
+
+
+class AdminOrderViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Order.objects.all()
+    serializer_class = OrderSerializer
+    filter_backends = [SearchFilter, OrderingFilter, DjangoFilterBackend]
+    search_fields = ['customer__first_name', 'customer__last_name', 'items__product__name']
+    ordering_fields = ['delivery_date', 'status', 'created_at']
+    filterset_fields = ['status', 'delivery_date', 'delivery_slot', 'customer']
+
+    def get_queryset(self):
+        admin = _resolve_admin_for_request(self.request)
+        queryset = Order.objects.all().prefetch_related('items')
+        if not admin:
+            return queryset.none()
+        if admin.role == "super_admin":
+            return queryset
+        return queryset.filter(customer__owner_admin=admin)
+
+    @action(detail=True, methods=['post'])
+    def mark_confirmed(self, request, pk=None):
+        if not _resolve_admin_for_request(request):
+            return Response({"error": "Admin authentication required"}, status=status.HTTP_403_FORBIDDEN)
+        order = self.get_object()
+        order.status = 'confirmed'
+        order.save(update_fields=['status'])
+        return Response({"message": "Marked confirmed", "order": self.get_serializer(order).data})
+
+    @action(detail=True, methods=['post'])
+    def mark_packed(self, request, pk=None):
+        if not _resolve_admin_for_request(request):
+            return Response({"error": "Admin authentication required"}, status=status.HTTP_403_FORBIDDEN)
+        order = self.get_object()
+        order.status = 'packed'
+        order.save(update_fields=['status'])
+        return Response({"message": "Marked packed", "order": self.get_serializer(order).data})
+
+    @action(detail=True, methods=['post'])
+    def mark_out_for_delivery(self, request, pk=None):
+        if not _resolve_admin_for_request(request):
+            return Response({"error": "Admin authentication required"}, status=status.HTTP_403_FORBIDDEN)
+        order = self.get_object()
+        order.status = 'out_for_delivery'
+        order.save(update_fields=['status'])
+        return Response({"message": "Marked out for delivery", "order": self.get_serializer(order).data})
+
+    @action(detail=True, methods=['post'])
+    def mark_delivered(self, request, pk=None):
+        if not _resolve_admin_for_request(request):
+            return Response({"error": "Admin authentication required"}, status=status.HTTP_403_FORBIDDEN)
+        order = self.get_object()
+        order.status = 'delivered'
+        order.delivered_at = timezone.now()
+        order.save(update_fields=['status', 'delivered_at'])
+        return Response({"message": "Marked delivered", "order": self.get_serializer(order).data})
 
 
 # ======================== HELLO WORLD ENDPOINT ========================
@@ -942,6 +1058,81 @@ def _subscription_items_for_date(basket_items, subscription_start_date, target_d
     return day_items
 
 
+def _is_subscription_eligible_product(product):
+    return bool(product and getattr(product, 'subscription_only', False))
+
+
+def _delivery_occurrences_for_duration(duration_days, frequency):
+    if duration_days <= 0:
+        return 0
+    if frequency == 'alternate':
+        return (duration_days + 1) // 2
+    if frequency == 'weekly':
+        return (duration_days + 6) // 7
+    return duration_days
+
+
+def _calculate_subscription_quote(subscription, normalized_basket_items):
+    if not subscription:
+        return {
+            "items_subtotal": Decimal('0.00'),
+            "plan_fee": Decimal('0.00'),
+            "discount_amount": Decimal('0.00'),
+            "total_amount": Decimal('0.00'),
+        }
+
+    items_subtotal = Decimal('0.00')
+    duration_days = int(subscription.duration_days or 0)
+
+    for item in normalized_basket_items:
+        occurrences = _delivery_occurrences_for_duration(duration_days, item['frequency'])
+        unit_price = Decimal(str(item['product'].price))
+        quantity = Decimal(item['quantity'])
+        items_subtotal += (unit_price * quantity * Decimal(occurrences))
+
+    plan_fee = Decimal(str(subscription.price or 0))
+    discount_percent = Decimal(str(subscription.product_discount_percent or 0))
+    discount_amount = (items_subtotal * discount_percent / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    total_amount = (items_subtotal - discount_amount + plan_fee).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+    return {
+        "items_subtotal": items_subtotal.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+        "plan_fee": plan_fee.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+        "discount_amount": discount_amount,
+        "total_amount": total_amount,
+    }
+
+
+def _format_admin_display_name(admin):
+    if not admin:
+        return "Admin"
+    display_name = f"{admin.first_name} {admin.last_name}".strip()
+    return display_name or admin.username or "Admin"
+
+
+def _get_default_delivery_address(customer):
+    if not customer:
+        return None
+    return CustomerAddress.objects.filter(customer=customer, is_default=True).order_by('-updated_at', '-created_at').first()
+
+
+def _resolve_delivery_address(customer, address_id=None):
+    if not customer:
+        return None
+    if address_id:
+        return CustomerAddress.objects.filter(customer=customer, address_id=address_id).first()
+    return _get_default_delivery_address(customer)
+
+
+def _resolve_delivery_slot(address_obj=None, explicit_slot=None):
+    slot = (explicit_slot or '').strip().lower()
+    if slot in ['morning', 'evening']:
+        return slot
+    if address_obj and address_obj.delivery_slot in ['morning', 'evening']:
+        return address_obj.delivery_slot
+    return 'morning'
+
+
 def _rebuild_future_subscription_deliveries(customer, start_date=None):
     if not customer or not customer.subscription or not customer.subscription_start_date or not customer.subscription_end_date:
         return
@@ -960,13 +1151,17 @@ def _rebuild_future_subscription_deliveries(customer, start_date=None):
     if rebuild_start > period_end:
         return
 
+    default_address = _get_default_delivery_address(customer)
+    default_slot = _resolve_delivery_slot(default_address)
+
     basket_items = list(
         SubscriptionBasketItem.objects.filter(customer=customer, is_active=True)
         .select_related('product')
         .order_by('product__name')
     )
 
-    # If basket is empty, clear future scheduled deliveries.
+    # Only scheduled future rows are safe to regenerate. Keep rows that already
+    # moved into operational states like packed or delivered.
     SubscriptionDelivery.objects.filter(
         customer=customer,
         scheduled_for__gte=rebuild_start,
@@ -979,14 +1174,23 @@ def _rebuild_future_subscription_deliveries(customer, start_date=None):
 
     deliveries_to_create = []
     items_to_create = []
+    occupied_dates = set(
+        SubscriptionDelivery.objects.filter(
+            customer=customer,
+            scheduled_for__gte=rebuild_start,
+            scheduled_for__lte=period_end,
+        ).values_list('scheduled_for', flat=True)
+    )
 
     current = rebuild_start
     while current <= period_end:
         todays = _subscription_items_for_date(basket_items, period_start, current)
-        if todays:
+        if todays and current not in occupied_dates:
             delivery = SubscriptionDelivery(
                 customer=customer,
                 subscription=customer.subscription,
+                delivery_address=default_address,
+                delivery_slot=default_slot,
                 scheduled_for=current,
                 status='scheduled',
             )
@@ -996,8 +1200,9 @@ def _rebuild_future_subscription_deliveries(customer, start_date=None):
     if not deliveries_to_create:
         return
 
-    # Bulk create deliveries, then attach items.
-    SubscriptionDelivery.objects.bulk_create(deliveries_to_create, ignore_conflicts=True)
+    # SQL Server backend here does not support ignore_conflicts=True.
+    # Scheduled rows for this range were already deleted above, so plain bulk_create is safe.
+    SubscriptionDelivery.objects.bulk_create(deliveries_to_create)
     created_deliveries = {
         d.scheduled_for: d
         for d in SubscriptionDelivery.objects.filter(
@@ -1023,7 +1228,121 @@ def _rebuild_future_subscription_deliveries(customer, start_date=None):
         current = current + timedelta(days=1)
 
     if items_to_create:
-        SubscriptionDeliveryItem.objects.bulk_create(items_to_create, ignore_conflicts=True)
+        SubscriptionDeliveryItem.objects.bulk_create(items_to_create)
+
+
+def _archive_product_and_notify(product, acting_admin=None):
+    admin_name = _format_admin_display_name(acting_admin)
+    active_basket_items = list(
+        SubscriptionBasketItem.objects.filter(product=product, is_active=True).select_related('customer')
+    )
+    affected_customers = []
+    seen_customer_ids = set()
+    for item in active_basket_items:
+        if item.customer_id not in seen_customer_ids:
+            affected_customers.append(item.customer)
+            seen_customer_ids.add(item.customer_id)
+
+    with transaction.atomic():
+        if active_basket_items:
+            SubscriptionBasketItem.objects.filter(
+                basket_item_id__in=[item.basket_item_id for item in active_basket_items]
+            ).update(is_active=False)
+
+        if product.status != 'discontinued' or product.is_featured or product.subscription_only:
+            product.status = 'discontinued'
+            product.is_featured = False
+            product.subscription_only = False
+            product.save(update_fields=['status', 'is_featured', 'subscription_only', 'updated_at'])
+
+        try:
+            notifications_to_create = []
+            for customer in affected_customers:
+                notifications_to_create.append(UserNotification(
+                    customer=customer,
+                    product=product,
+                    notification_type='warning',
+                    title=f"{product.name} discontinued",
+                    message=(
+                        f"{product.name} was discontinued by {admin_name}. "
+                        "It has been removed from your subscription items and will not be scheduled for future deliveries."
+                    ),
+                    metadata={
+                        "reason": "product_discontinued",
+                        "product_id": product.product_id,
+                        "product_name": product.name,
+                        "admin_name": admin_name,
+                    },
+                ))
+
+            if notifications_to_create:
+                UserNotification.objects.bulk_create(notifications_to_create)
+        except (OperationalError, ProgrammingError):
+            # Allow product discontinuation to succeed even if notification migration
+            # has not been applied yet.
+            pass
+
+    for customer in affected_customers:
+        _rebuild_future_subscription_deliveries(customer)
+
+    return {
+        "affected_customers": len(affected_customers),
+        "removed_basket_items": len(active_basket_items),
+        "admin_name": admin_name,
+    }
+
+
+def _cleanup_discontinued_subscription_items(customer):
+    if not customer:
+        return
+
+    discontinued_items = list(
+        SubscriptionBasketItem.objects.filter(
+            customer=customer,
+            is_active=True,
+            product__status='discontinued',
+        ).select_related('product')
+    )
+    if not discontinued_items:
+        return
+
+    basket_item_ids = [item.basket_item_id for item in discontinued_items]
+    SubscriptionBasketItem.objects.filter(basket_item_id__in=basket_item_ids).update(is_active=False)
+
+    try:
+        notifications_to_create = []
+        for item in discontinued_items:
+            product = item.product
+            existing = UserNotification.objects.filter(
+                customer=customer,
+                product=product,
+                title=f"{product.name} discontinued",
+            ).exists()
+            if existing:
+                continue
+            notifications_to_create.append(UserNotification(
+                customer=customer,
+                product=product,
+                notification_type='warning',
+                title=f"{product.name} discontinued",
+                message=(
+                    f"{product.name} was discontinued by the admin. "
+                    "It has been removed from your subscription items and will not be scheduled for future deliveries."
+                ),
+                metadata={
+                    "reason": "product_discontinued",
+                    "product_id": product.product_id,
+                    "product_name": product.name,
+                    "admin_name": "Admin",
+                },
+            ))
+
+        if notifications_to_create:
+            UserNotification.objects.bulk_create(notifications_to_create)
+    except (OperationalError, ProgrammingError):
+        pass
+
+    _rebuild_future_subscription_deliveries(customer)
 
 
 @api_view(['GET'])
@@ -1031,6 +1350,8 @@ def user_dashboard_data(request):
     customer = _resolve_customer_for_user_request(request)
     if not customer:
         return Response({"error": "Valid customer not found"}, status=status.HTTP_400_BAD_REQUEST)
+
+    _cleanup_discontinued_subscription_items(customer)
 
     products = Product.objects.filter(status='active').order_by('-created_at')[:40]
     subscriptions = Subscription.objects.filter(is_active=True).order_by('price')
@@ -1044,6 +1365,9 @@ def user_dashboard_data(request):
             "name": customer.subscription.name,
             "subscription_start_date": customer.subscription_start_date,
             "subscription_end_date": customer.subscription_end_date,
+            "product_discount_percent": customer.subscription.product_discount_percent,
+            "includes_delivery_scheduling": customer.subscription.includes_delivery_scheduling,
+            "suppress_daily_payments": customer.subscription.suppress_daily_payments,
         }
 
     return Response({
@@ -1092,7 +1416,7 @@ def user_subscription_basket(request):
     product = Product.objects.filter(product_id=product_id, status='active').first()
     if not product:
         return Response({"error": "Product not found"}, status=status.HTTP_404_NOT_FOUND)
-    if not product.subscription_only:
+    if not _is_subscription_eligible_product(product):
         return Response({"error": "Product is not subscription-eligible"}, status=status.HTTP_400_BAD_REQUEST)
 
     if quantity < 1:
@@ -1116,22 +1440,28 @@ def user_subscription_deliveries(request):
     if not customer:
         return Response({"error": "Valid customer not found"}, status=status.HTTP_400_BAD_REQUEST)
 
-    days = int(request.query_params.get('days') or 7)
-    days = min(max(days, 1), 31)
+    try:
+        days = int(request.query_params.get('days') or 7)
+        days = min(max(days, 1), 31)
 
-    if customer.subscription and customer.subscription_end_date and customer.subscription_end_date.date() >= timezone.localdate():
-        # Ensure future schedule exists if basket is present.
-        _rebuild_future_subscription_deliveries(customer)
+        if customer.subscription and customer.subscription_end_date and customer.subscription_end_date.date() >= timezone.localdate():
+            # Ensure future schedule exists if basket is present.
+            _rebuild_future_subscription_deliveries(customer)
 
-    start = timezone.localdate()
-    end = start + timedelta(days=days - 1)
+        start = timezone.localdate()
+        end = start + timedelta(days=days - 1)
 
-    deliveries = (
-        SubscriptionDelivery.objects.filter(customer=customer, scheduled_for__gte=start, scheduled_for__lte=end)
-        .prefetch_related('items')
-        .order_by('scheduled_for')
-    )
-    return Response({"deliveries": SubscriptionDeliverySerializer(deliveries, many=True).data})
+        deliveries = (
+            SubscriptionDelivery.objects.filter(customer=customer, scheduled_for__gte=start, scheduled_for__lte=end)
+            .prefetch_related('items')
+            .order_by('scheduled_for')
+        )
+        return Response({"deliveries": SubscriptionDeliverySerializer(deliveries, many=True).data})
+    except (OperationalError, ProgrammingError):
+        return Response({
+            "error": "Delivery schema is outdated or unavailable. Run the latest database migrations.",
+            "deliveries": [],
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['POST'])
@@ -1142,18 +1472,59 @@ def user_subscribe(request):
 
     subscription_id = request.data.get("subscription_id")
     payment_method = (request.data.get("payment_method") or "card").lower()
+    basket_items_payload = request.data.get("basket_items") or []
+    selected_address = _resolve_delivery_address(customer, request.data.get('address_id'))
+    selected_slot = _resolve_delivery_slot(selected_address, request.data.get('delivery_slot'))
 
     if not subscription_id:
         return Response({"error": "subscription_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+    if not selected_address:
+        return Response({"error": "A delivery address is required"}, status=status.HTTP_400_BAD_REQUEST)
 
     subscription = Subscription.objects.filter(subscription_id=subscription_id, is_active=True).first()
     if not subscription:
         return Response({"error": "Subscription plan not found or inactive"}, status=status.HTTP_404_NOT_FOUND)
 
+    normalized_basket_items = []
+    if basket_items_payload:
+        if not isinstance(basket_items_payload, list):
+            return Response({"error": "basket_items must be a list"}, status=status.HTTP_400_BAD_REQUEST)
+
+        subscription_product_ids = [item.get('product_id') for item in basket_items_payload if item.get('product_id')]
+        subscription_products = Product.objects.filter(
+            product_id__in=subscription_product_ids,
+            status='active',
+        )
+        subscription_product_map = {product.product_id: product for product in subscription_products}
+
+        for item in basket_items_payload:
+            product_id = item.get('product_id')
+            quantity = int(item.get('quantity') or 0)
+            frequency = (item.get('frequency') or 'daily').lower()
+            product = subscription_product_map.get(product_id)
+
+            if not product or not _is_subscription_eligible_product(product) or quantity < 1:
+                return Response({"error": "Invalid basket item payload"}, status=status.HTTP_400_BAD_REQUEST)
+            if frequency not in ['daily', 'alternate', 'weekly']:
+                return Response({"error": "Invalid basket item frequency"}, status=status.HTTP_400_BAD_REQUEST)
+
+            normalized_basket_items.append({
+                'product': product,
+                'quantity': quantity,
+                'frequency': frequency,
+            })
+
+        if subscription.max_products and len(normalized_basket_items) > subscription.max_products:
+            return Response({
+                "error": f"Selected plan allows up to {subscription.max_products} subscription products",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+    quote = _calculate_subscription_quote(subscription, normalized_basket_items)
+
     transaction = PaymentTransaction.objects.create(
         customer=customer,
         subscription=subscription,
-        amount=subscription.price,
+        amount=quote["total_amount"],
         payment_method=payment_method if payment_method in ['card', 'upi', 'netbanking'] else 'card',
         status='pending',
         currency='INR',
@@ -1173,6 +1544,24 @@ def user_subscribe(request):
         customer.subscription_end_date = now + timedelta(days=subscription.duration_days)
         customer.save(update_fields=['subscription', 'subscription_start_date', 'subscription_end_date'])
 
+        if not selected_address.is_default:
+            CustomerAddress.objects.filter(customer=customer).exclude(address_id=selected_address.address_id).update(is_default=False)
+            selected_address.is_default = True
+        selected_address.delivery_slot = selected_slot
+        selected_address.save(update_fields=['is_default', 'delivery_slot'])
+        _sync_customer_primary_address(customer, selected_address)
+
+        for item in normalized_basket_items:
+            SubscriptionBasketItem.objects.update_or_create(
+                customer=customer,
+                product=item['product'],
+                is_active=True,
+                defaults={
+                    'quantity': item['quantity'],
+                    'frequency': item['frequency'],
+                },
+            )
+
         _rebuild_future_subscription_deliveries(customer, start_date=customer.subscription_start_date.date())
 
         return Response({
@@ -1182,6 +1571,13 @@ def user_subscribe(request):
                 "name": subscription.name,
                 "start_date": customer.subscription_start_date,
                 "end_date": customer.subscription_end_date,
+            },
+            "subscription_basket_items_added": len(normalized_basket_items),
+            "quote": {
+                "items_subtotal": quote["items_subtotal"],
+                "plan_fee": quote["plan_fee"],
+                "discount_amount": quote["discount_amount"],
+                "total_amount": quote["total_amount"],
             },
         }, status=status.HTTP_201_CREATED)
 
@@ -1203,6 +1599,47 @@ def user_payments(request):
 
     payments = PaymentTransaction.objects.filter(customer=customer).order_by('-created_at')
     return Response(PaymentTransactionSerializer(payments, many=True).data)
+
+
+@api_view(['GET'])
+def user_notifications(request):
+    customer = _resolve_customer_for_user_request(request)
+    if not customer:
+        return Response({"error": "Valid customer not found"}, status=status.HTTP_400_BAD_REQUEST)
+
+    _cleanup_discontinued_subscription_items(customer)
+
+    try:
+        mark_read = str(request.query_params.get('mark_read') or '').lower() in ['1', 'true', 'yes']
+        unread_only = str(request.query_params.get('unread_only') or '').lower() in ['1', 'true', 'yes']
+        limit = min(max(int(request.query_params.get('limit') or 30), 1), 100)
+
+        notifications_qs = UserNotification.objects.filter(customer=customer).select_related('product')
+        unread_count = notifications_qs.filter(is_read=False).count()
+        if unread_only:
+            notifications_qs = notifications_qs.filter(is_read=False)
+
+        notifications = list(notifications_qs.order_by('-created_at')[:limit])
+
+        if mark_read:
+            unread_ids = [note.notification_id for note in notifications if not note.is_read]
+            if unread_ids:
+                UserNotification.objects.filter(notification_id__in=unread_ids).update(is_read=True)
+                for note in notifications:
+                    if note.notification_id in unread_ids:
+                        note.is_read = True
+                unread_count = max(0, unread_count - len(unread_ids))
+
+        return Response({
+            "unread_count": unread_count,
+            "results": UserNotificationSerializer(notifications, many=True).data,
+        })
+    except (OperationalError, ProgrammingError):
+        return Response({
+            "unread_count": 0,
+            "results": [],
+            "warning": "Notifications table is not available yet. Run migrations to enable alerts.",
+        })
 
 
 @api_view(['POST'])
@@ -1241,18 +1678,25 @@ def user_cart_checkout(request):
 
     cart_items = request.data.get("items") or []
     payment_method = (request.data.get("payment_method") or "card").lower()
+    delivery_date_raw = request.data.get('delivery_date')
+    selected_address = _resolve_delivery_address(customer, request.data.get('address_id'))
+    selected_slot = _resolve_delivery_slot(selected_address, request.data.get('delivery_slot'))
 
     if not isinstance(cart_items, list) or len(cart_items) == 0:
         return Response({"error": "Cart items are required"}, status=status.HTTP_400_BAD_REQUEST)
+    if not selected_address:
+        return Response({"error": "A delivery address is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        delivery_date = timezone.datetime.fromisoformat(str(delivery_date_raw)).date() if delivery_date_raw else (timezone.localdate() + timedelta(days=1))
+    except Exception:
+        return Response({"error": "Invalid delivery_date"}, status=status.HTTP_400_BAD_REQUEST)
 
     product_ids = [item.get('product_id') for item in cart_items if item.get('product_id')]
     products = Product.objects.filter(product_id__in=product_ids, status='active')
     product_map = {product.product_id: product for product in products}
-    subscription_only_products = [product for product in products if getattr(product, 'subscription_only', False)]
-
-    subtotal = 0
+    subtotal = Decimal('0.00')
     normalized_items = []
-    subscription_only_hits = []
 
     for item in cart_items:
         product_id = item.get('product_id')
@@ -1261,15 +1705,8 @@ def user_cart_checkout(request):
         if not product or quantity <= 0:
             return Response({"error": "Invalid cart item payload"}, status=status.HTTP_400_BAD_REQUEST)
 
-        if product.subscription_only:
-            subscription_only_hits.append({
-                "product_id": product.product_id,
-                "name": product.name,
-            })
-            continue
-
-        unit_price = float(product.price)
-        line_total = unit_price * quantity
+        unit_price = Decimal(str(product.price))
+        line_total = unit_price * Decimal(quantity)
         subtotal += line_total
         normalized_items.append({
             'product': product,
@@ -1278,25 +1715,30 @@ def user_cart_checkout(request):
             'line_total': line_total,
         })
 
-    if subscription_only_hits:
-        return Response(
-            {
-                "error": "Some items require subscription delivery",
-                "subscription_only_items": subscription_only_hits,
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    discount_amount = Decimal('0.00')
+    active_subscription = (
+        customer.subscription
+        and customer.subscription_end_date
+        and customer.subscription_end_date >= timezone.now()
+    )
+    discount_percent = Decimal(str(customer.subscription.product_discount_percent)) if active_subscription else Decimal('0.00')
+    if discount_percent > 0:
+        discount_amount = (subtotal * discount_percent / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
-    tax_amount = round(subtotal * 0.05, 2)
-    total_amount = round(subtotal + tax_amount, 2)
+    tax_amount = ((subtotal - discount_amount) * Decimal('0.05')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    total_amount = (subtotal - discount_amount + tax_amount).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
     order = Order.objects.create(
         customer=customer,
+        delivery_address=selected_address,
+        delivery_date=delivery_date,
+        delivery_slot=selected_slot,
         subtotal=subtotal,
+        discount_amount=discount_amount,
         tax_amount=tax_amount,
         total_amount=total_amount,
         currency='INR',
-        status='pending',
+        status='placed',
     )
 
     for line_item in normalized_items:
@@ -1327,12 +1769,17 @@ def user_cart_checkout(request):
             payment.paid_at = now
         payment.failure_reason = None
         payment.save(update_fields=['status', 'paid_at', 'failure_reason'])
-        order.status = 'pending' if payment_method == 'cod' else 'paid'
+        order.status = 'placed' if payment_method == 'cod' else 'confirmed'
         order.save(update_fields=['status'])
         return Response({
             "message": "Order placed" if payment_method == 'cod' else "Order payment successful",
             "order": OrderSerializer(order).data,
             "payment": OrderPaymentSerializer(payment).data,
+            "subscription_benefit": {
+                "applied": bool(discount_amount > 0),
+                "discount_amount": discount_amount,
+                "discount_percent": discount_percent,
+            },
         }, status=status.HTTP_201_CREATED)
 
     payment.status = 'failed'
@@ -1345,6 +1792,11 @@ def user_cart_checkout(request):
         "reason": failure_reason,
         "order": OrderSerializer(order).data,
         "payment": OrderPaymentSerializer(payment).data,
+        "subscription_benefit": {
+            "applied": bool(discount_amount > 0),
+            "discount_amount": discount_amount,
+            "discount_percent": discount_percent,
+        },
     }, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -1354,8 +1806,13 @@ def user_orders(request):
     if not customer:
         return Response({"error": "Valid customer not found"}, status=status.HTTP_400_BAD_REQUEST)
 
-    orders = Order.objects.filter(customer=customer).order_by('-created_at')
-    return Response(OrderSerializer(orders, many=True).data)
+    try:
+        orders = Order.objects.filter(customer=customer).order_by('-created_at')
+        return Response(OrderSerializer(orders, many=True).data)
+    except (OperationalError, ProgrammingError):
+        return Response({
+            "error": "Order schema is outdated or unavailable. Run the latest database migrations.",
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['GET', 'PATCH', 'DELETE'])
@@ -1430,6 +1887,7 @@ def user_addresses(request):
         state=serializer.validated_data.get('state'),
         postal_code=serializer.validated_data.get('postal_code'),
         country=serializer.validated_data.get('country'),
+        delivery_slot=serializer.validated_data.get('delivery_slot') or 'morning',
         is_default=bool(serializer.validated_data.get('is_default')),
     )
 

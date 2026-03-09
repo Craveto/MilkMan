@@ -35,6 +35,9 @@ export const userService = {
   upsertSubscriptionBasket: (customerId, data) => apiClient.post('/user/subscription-basket/', { ...data, customer_id: customerId }),
   deleteSubscriptionBasket: (customerId, productId) => apiClient.delete('/user/subscription-basket/', { params: { customer_id: customerId, product_id: productId } }),
   getSubscriptionDeliveries: (customerId, days = 7) => apiClient.get('/user/subscription-deliveries/', { params: { customer_id: customerId, days } }),
+  getNotifications: (customerId, options = {}) => apiClient.get('/user/notifications/', {
+    params: { customer_id: customerId, ...options },
+  }),
   getProfile: () => apiClient.get('/user/profile/'),
   updateProfile: (data) => apiClient.patch('/user/profile/', data),
   getAddresses: () => apiClient.get('/user/addresses/'),
@@ -54,6 +57,16 @@ export const adminService = {
   delete: (id) => apiClient.delete(`/admins/${id}/`),
   getActive: () => apiClient.get('/admins/active_admins/'),
   deactivate: (id) => apiClient.post(`/admins/${id}/deactivate/`),
+  getSubscriptionDeliveries: (params = {}) => apiClient.get('/deliveries/', { params }),
+  markSubscriptionDeliveryPacked: (id) => apiClient.post(`/deliveries/${id}/mark_packed/`),
+  markSubscriptionDeliveryOutForDelivery: (id) => apiClient.post(`/deliveries/${id}/mark_out_for_delivery/`),
+  markSubscriptionDeliveryDelivered: (id) => apiClient.post(`/deliveries/${id}/mark_delivered/`),
+  markSubscriptionDeliveryMissed: (id) => apiClient.post(`/deliveries/${id}/mark_missed/`),
+  getOrderDeliveries: (params = {}) => apiClient.get('/admin-orders/', { params }),
+  markOrderConfirmed: (id) => apiClient.post(`/admin-orders/${id}/mark_confirmed/`),
+  markOrderPacked: (id) => apiClient.post(`/admin-orders/${id}/mark_packed/`),
+  markOrderOutForDelivery: (id) => apiClient.post(`/admin-orders/${id}/mark_out_for_delivery/`),
+  markOrderDelivered: (id) => apiClient.post(`/admin-orders/${id}/mark_delivered/`),
 };
 
 export const developerService = {
@@ -102,6 +115,7 @@ export const productService = {
   create: (data) => apiClient.post('/products/', data),
   update: (id, data) => apiClient.put(`/products/${id}/`, data),
   delete: (id) => apiClient.delete(`/products/${id}/`),
+  deleteAnyway: (id) => apiClient.post(`/products/${id}/delete_anyway/`),
   getFeatured: () => apiClient.get('/products/featured_products/'),
   getByCategory: (categoryId) => apiClient.get('/products/', { params: { category: categoryId } }),
 };

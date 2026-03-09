@@ -9,6 +9,14 @@ function ProductsPage() {
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [feedbackModal, setFeedbackModal] = useState({
+    open: false,
+    variant: 'success',
+    title: '',
+    message: '',
+    action: null,
+    productId: null,
+  });
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -29,6 +37,27 @@ function ProductsPage() {
     fetchProducts();
     fetchCategories();
   }, []);
+
+  useEffect(() => {
+    if (!feedbackModal.open || feedbackModal.variant === 'warning' || feedbackModal.variant === 'error') {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      setFeedbackModal((prev) => ({ ...prev, open: false }));
+    }, 2800);
+    return () => window.clearTimeout(timer);
+  }, [feedbackModal.open, feedbackModal.variant]);
+
+  const openFeedbackModal = (variant, title, message, action = null, productId = null) => {
+    setFeedbackModal({
+      open: true,
+      variant,
+      title,
+      message,
+      action,
+      productId,
+    });
+  };
 
   const fetchCategories = async () => {
     try {
@@ -79,12 +108,50 @@ function ProductsPage() {
 
   const handleDelete = async (product) => {
     try {
-      await productService.delete(product.product_id);
-      setProducts(products.filter(p => p.product_id !== product.product_id));
-      alert('Product deleted successfully');
+      const response = await productService.delete(product.product_id);
+      await fetchProducts();
+      openFeedbackModal(
+        'success',
+        'Product Deleted',
+        response?.data?.message || 'Product deleted successfully'
+      );
     } catch (error) {
       console.error('Error deleting product:', error);
-      alert('Failed to delete product');
+      if (error.response?.status === 409 && error.response?.data?.can_delete_anyway) {
+        openFeedbackModal(
+          'warning',
+          'Delete Blocked',
+          error.response?.data?.message || 'This product is already used in active records.',
+          'delete-anyway',
+          product.product_id
+        );
+        return;
+      }
+      const errorMsg = error.response?.data?.message ||
+        error.response?.data?.detail ||
+        'Failed to delete product';
+      openFeedbackModal('error', 'Delete Failed', errorMsg);
+    }
+  };
+
+  const handleDeleteAnyway = async () => {
+    if (!feedbackModal.productId) return;
+    try {
+      const response = await productService.deleteAnyway(feedbackModal.productId);
+      await fetchProducts();
+      const notifiedCount = Number(response?.data?.notified_customers || 0);
+      openFeedbackModal(
+        'success',
+        'Product Discontinued',
+        notifiedCount > 0
+          ? `${response?.data?.message} ${notifiedCount} customer${notifiedCount > 1 ? 's were' : ' was'} notified in Alerts.`
+          : (response?.data?.message || 'Product discontinued successfully')
+      );
+    } catch (error) {
+      const errorMsg = error.response?.data?.message ||
+        error.response?.data?.detail ||
+        'Failed to discontinue product';
+      openFeedbackModal('error', 'Action Failed', errorMsg);
     }
   };
 
@@ -142,7 +209,7 @@ function ProductsPage() {
     { key: 'sku', label: 'SKU' },
     { key: 'price', label: 'Price', render: (val) => `$${val}` },
     { key: 'quantity_in_stock', label: 'Stock' },
-    { key: 'subscription_only', label: 'Subscription', render: (val) => (val ? 'Plan Only' : 'One-time') },
+    { key: 'subscription_only', label: 'Subscription', render: (val) => (val ? 'Eligible' : 'One-time only') },
     { key: 'status', label: 'Status' },
   ];
 
@@ -280,7 +347,7 @@ function ProductsPage() {
                 checked={Boolean(formData.subscription_only)}
                 onChange={(e) => setFormData({ ...formData, subscription_only: e.target.checked })}
               />
-              Subscription Only (Delivered via plan)
+              Available for Subscription (can also be ordered one-time)
             </label>
           </div>
 
@@ -299,6 +366,56 @@ function ProductsPage() {
             <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
           </div>
         </form>
+      </Modal>
+
+      <Modal
+        isOpen={feedbackModal.open}
+        title=""
+        onClose={() => setFeedbackModal((prev) => ({ ...prev, open: false }))}
+      >
+        <div className={`product-feedback product-feedback-${feedbackModal.variant}`}>
+          <div className="product-feedback-accent" />
+          <div className="product-feedback-shell">
+            <div className={`product-feedback-icon ${feedbackModal.variant}`}>
+              {feedbackModal.variant === 'success' ? 'OK' : feedbackModal.variant === 'warning' ? 'FYI' : '!'}
+            </div>
+            <div className="product-feedback-copy">
+              <span className="product-feedback-kicker">
+                {feedbackModal.variant === 'warning' ? 'Action adjusted' : feedbackModal.variant === 'error' ? 'Needs attention' : 'Update complete'}
+              </span>
+              <h3>{feedbackModal.title}</h3>
+              <p>{feedbackModal.message}</p>
+            </div>
+          </div>
+          <div className="product-feedback-actions">
+            {feedbackModal.action === 'delete-anyway' ? (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setFeedbackModal((prev) => ({ ...prev, open: false }))}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-delete-anyway"
+                  onClick={handleDeleteAnyway}
+                >
+                  Delete Anyway
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className={`btn ${feedbackModal.variant === 'error' ? 'btn-delete' : 'btn-primary'}`}
+                onClick={() => setFeedbackModal((prev) => ({ ...prev, open: false }))}
+              >
+                Continue
+              </button>
+            )}
+          </div>
+        </div>
       </Modal>
     </div>
   );

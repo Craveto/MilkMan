@@ -122,10 +122,25 @@
   font-size: 20px;
   min-width: 20px;
   transition: transform 0.3s ease;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .nav-item:hover .icon {
   transform: scale(1.1);
+}
+
+.nav-alert-dot {
+  position: absolute;
+  top: -4px;
+  right: -7px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ffd54a;
+  box-shadow: 0 0 0 2px rgba(35, 21, 63, 0.75);
 }
 
 .nav-item span:last-child {

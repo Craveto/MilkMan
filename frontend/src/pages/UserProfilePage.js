@@ -12,6 +12,7 @@ const emptyAddress = {
   state: '',
   postal_code: '',
   country: '',
+  delivery_slot: 'morning',
   is_default: false,
 };
 
@@ -360,6 +361,7 @@ function UserProfilePage({ authUser, onAuthUserUpdate, onAuthRefresh }) {
       state: address.state || '',
       postal_code: address.postal_code || '',
       country: address.country || '',
+      delivery_slot: address.delivery_slot || 'morning',
       is_default: Boolean(address.is_default),
     });
     setActivePanel('settings');
@@ -840,6 +842,16 @@ function UserProfilePage({ authUser, onAuthUserUpdate, onAuthRefresh }) {
                       autoComplete="country-name"
                     />
                   </label>
+                  <label>
+                    Preferred Delivery Slot
+                    <select
+                      value={addressForm.delivery_slot}
+                      onChange={(event) => setAddressForm({ ...addressForm, delivery_slot: event.target.value })}
+                    >
+                      <option value="morning">Morning</option>
+                      <option value="evening">Evening</option>
+                    </select>
+                  </label>
                   <label className="module-checkbox">
                     <input
                       type="checkbox"
@@ -876,6 +888,7 @@ function UserProfilePage({ authUser, onAuthUserUpdate, onAuthRefresh }) {
                         <div className="module-meta">
                           {[address.city, address.state, address.postal_code, address.country].filter(Boolean).join(', ')}
                         </div>
+                        <div className="module-meta">Preferred slot: {address.delivery_slot === 'evening' ? 'Evening' : 'Morning'}</div>
                       </div>
                       <div className="module-actions">
                         {!address.is_default && (
