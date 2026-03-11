@@ -7,7 +7,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Q
 from django.db import transaction
 from django.db.models.deletion import ProtectedError
-from django.db.utils import OperationalError, ProgrammingError
+from django.db.utils import OperationalError, ProgrammingError, IntegrityError
 from django.utils import timezone
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -804,17 +804,35 @@ def auth_signup(request):
         if not phone or not phone.isdigit() or not (len(phone) == 10 and phone[0] in ['6', '7', '8', '9']):
             return Response({"error": "Phone must be 10 digits (India) (e.g. 9876543210)"}, status=status.HTTP_400_BAD_REQUEST)
 
-        application = AdminSignupApplication.objects.create(
-            first_name=request.data.get("first_name"),
-            last_name=request.data.get("last_name"),
-            email=request.data.get("email"),
-            phone=phone,
-            shop_name=request.data.get("shop_name"),
-            shop_address=request.data.get("shop_address"),
-            gst_number=request.data.get("gst_number"),
-            notes=request.data.get("notes"),
-            status='pending',
-        )
+        try:
+            application = AdminSignupApplication.objects.create(
+                first_name=request.data.get("first_name"),
+                last_name=request.data.get("last_name"),
+                email=request.data.get("email"),
+                phone=phone,
+                shop_name=request.data.get("shop_name"),
+                shop_address=request.data.get("shop_address"),
+                gst_number=request.data.get("gst_number"),
+                notes=request.data.get("notes"),
+                status='pending',
+            )
+        except IntegrityError:
+            return Response(
+                {"error": "Could not save admin application. Check for duplicate or invalid data."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except (OperationalError, ProgrammingError) as exc:
+            logger.exception("Admin signup application database error")
+            error_text = str(exc).lower()
+            if "admin_signup_application" in error_text and ("does not exist" in error_text or "invalid object name" in error_text or "relation" in error_text):
+                return Response(
+                    {"error": "Admin signup is not available because the admin application table is missing. Run the latest migrations on the hosted database."},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            return Response(
+                {"error": "Admin signup is temporarily unavailable due to a database configuration issue."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         dev_emails = getattr(settings, 'DEVELOPER_EMAILS', []) or []
         body = (
