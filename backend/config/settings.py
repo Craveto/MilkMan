@@ -33,6 +33,9 @@ ALLOWED_HOSTS = env_config(
     default='localhost,127.0.0.1',
     cast=Csv()
 )
+RENDER_EXTERNAL_HOSTNAME = env_config('RENDER_EXTERNAL_HOSTNAME', default='').strip()
+if RENDER_EXTERNAL_HOSTNAME and RENDER_EXTERNAL_HOSTNAME not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS = list(ALLOWED_HOSTS) + [RENDER_EXTERNAL_HOSTNAME]
 
 
 # Application definition
