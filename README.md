@@ -126,6 +126,12 @@ Important cookie/session values for split frontend/backend hosting:
 - `SESSION_COOKIE_SAMESITE=None`
 - `CSRF_COOKIE_SAMESITE=None`
 
+Minimum Render host fix for this deployment:
+
+- `DJANGO_ALLOWED_HOSTS=milkman-02fj.onrender.com`
+- `CORS_ALLOWED_ORIGINS=https://your-frontend.vercel.app`
+- `CSRF_TRUSTED_ORIGINS=https://your-frontend.vercel.app`
+
 ## Vercel frontend deployment
 
 This repo includes [frontend/vercel.json](/e:/Bizmetric/Trae/MilkMan/frontend/vercel.json) for SPA routing.
@@ -140,6 +146,10 @@ Deploy with:
 Required Vercel environment variable:
 
 - `REACT_APP_API_BASE_URL=https://your-render-service.onrender.com/api`
+
+For the current Render service, use:
+
+- `REACT_APP_API_BASE_URL=https://milkman-02fj.onrender.com/api`
 
 ## Migration path from current local setup
 

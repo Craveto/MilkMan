@@ -6,15 +6,23 @@ services:
     rootDir: backend
     buildCommand: pip install -r requirements.render.txt && python manage.py collectstatic --noinput && python manage.py migrate
     startCommand: gunicorn config.wsgi:application --bind 0.0.0.0:$PORT
+    # Keep deployment host/cookie settings here. Frontend-origin values should still
+    # be adjusted in the Render dashboard when the Vercel domain changes.
     envVars:
       - key: DJANGO_DEBUG
         value: false
+      - key: DJANGO_ALLOWED_HOSTS
+        value: milkman-02fj.onrender.com
       - key: DATABASE_SSL_REQUIRE
         value: true
       - key: TRUST_PROXY_SSL_HEADER
         value: true
       - key: USE_X_FORWARDED_HOST
         value: true
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: CSRF_TRUSTED_ORIGINS
+        sync: false
       - key: SESSION_COOKIE_SECURE
         value: true
       - key: CSRF_COOKIE_SECURE
