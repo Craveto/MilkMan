@@ -1,9 +1,29 @@
-# MilkMan
+# MilkMan 
 
+#Overview : 
+-It includes three frontends 
+ 1) User
+ 2) Admin - working for list the items , sale the product to customer 
+ 3) Super Admin - for admin authentication
+
+I know the UI is not that attractive , I'm working on it . Primerily I have worked with functionlaties and woriking modules . 
+- Subscription Model
+- Admin Authentication only By superAdmin that is developer for user it is normal usual login signup model .
+- All the data is stored in supabase .
+- API's are working
+- Delevery options like schedule , user can see item updates .
+
+
+<img width="1884" height="785" alt="image" src="https://github.com/user-attachments/assets/8d68a171-5c68-4368-b967-15dde9fd216f" />
+
+
+#Below is the configuration details , and how you can run this project on your machines . 
 MilkMan is a Django + React monorepo with:
 
 - `backend/`: Django REST API
 - `frontend/`: React frontend
+
+
 
 The project now supports both:
 
