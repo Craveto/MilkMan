@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { adminService, categoryService, subscriptionService, customerService, productService } from '../services/api';
+import { adminService } from '../services/api';
 import '../styles/Dashboard.css';
 
 function Dashboard({ authUser }) {
@@ -25,20 +25,13 @@ function Dashboard({ authUser }) {
   const fetchStats = async () => {
     try {
       setLoading(true);
-      const [admins, categories, subscriptions, customers, products] = await Promise.all([
-        adminService.getAll(),
-        categoryService.getAll(),
-        subscriptionService.getAll(),
-        customerService.getAll(),
-        productService.getAll(),
-      ]);
-
+      const response = await adminService.getDashboardSummary();
       setStats({
-        admins: admins.data?.count || admins.data?.results?.length || 0,
-        categories: categories.data?.count || categories.data?.results?.length || 0,
-        subscriptions: subscriptions.data?.count || subscriptions.data?.results?.length || 0,
-        customers: customers.data?.count || customers.data?.results?.length || 0,
-        products: products.data?.count || products.data?.results?.length || 0,
+        admins: Number(response.data?.admins || 0),
+        categories: Number(response.data?.categories || 0),
+        subscriptions: Number(response.data?.subscriptions || 0),
+        customers: Number(response.data?.customers || 0),
+        products: Number(response.data?.products || 0),
       });
     } catch (err) {
       console.error('Error fetching stats:', err);

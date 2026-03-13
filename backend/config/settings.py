@@ -187,6 +187,7 @@ CORS_ALLOWED_ORIGINS = env_config(
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = list(default_headers) + [
     'x-developer-token',
+    'x-auth-token',
 ]
 
 # Dev convenience: allow any localhost port (safe for local dev only).
@@ -254,6 +255,7 @@ SESSION_COOKIE_SAMESITE = env_config('SESSION_COOKIE_SAMESITE', default='Lax' if
 CSRF_COOKIE_SAMESITE = env_config('CSRF_COOKIE_SAMESITE', default='Lax' if DEBUG else 'None')
 ADMIN_MAX_FAILED_LOGIN_ATTEMPTS = env_config('ADMIN_MAX_FAILED_LOGIN_ATTEMPTS', default=5, cast=int)
 ADMIN_LOCKOUT_MINUTES = env_config('ADMIN_LOCKOUT_MINUTES', default=30, cast=int)
+AUTH_TOKEN_MAX_AGE_SECONDS = env_config('AUTH_TOKEN_MAX_AGE_SECONDS', default=60 * 60 * 24 * 7, cast=int)
 
 # Dev only: return OTP in API responses (for testing without SMS/email providers).
 DEV_RETURN_OTPS = env_config('DEV_RETURN_OTPS', default=False, cast=bool)

@@ -2,6 +2,7 @@ import axios from 'axios';
 
 // Configure via CRA env var in production: REACT_APP_API_BASE_URL
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8001/api';
+const AUTH_TOKEN_KEY = 'mm_auth_token';
 const DEVELOPER_TOKEN_KEY = 'mm_developer_token';
 
 const apiClient = axios.create({
@@ -19,6 +20,28 @@ const developerApiClient = axios.create({
   },
   withCredentials: false,
 });
+
+const getAuthToken = () => {
+  try {
+    return window.localStorage.getItem(AUTH_TOKEN_KEY) || '';
+  } catch (_error) {
+    return '';
+  }
+};
+
+const setAuthToken = (token) => {
+  try {
+    if (token) {
+      window.localStorage.setItem(AUTH_TOKEN_KEY, token);
+    } else {
+      window.localStorage.removeItem(AUTH_TOKEN_KEY);
+    }
+  } catch (_error) {
+    // ignore storage failures
+  }
+};
+
+const clearAuthToken = () => setAuthToken('');
 
 const getDeveloperToken = () => {
   try {
@@ -42,6 +65,18 @@ const setDeveloperToken = (token) => {
 
 const clearDeveloperToken = () => setDeveloperToken('');
 
+apiClient.interceptors.request.use((config) => {
+  const token = getAuthToken();
+  const nextConfig = { ...config };
+  nextConfig.headers = {
+    ...(config.headers || {}),
+  };
+  if (token) {
+    nextConfig.headers['X-Auth-Token'] = token;
+  }
+  return nextConfig;
+});
+
 developerApiClient.interceptors.request.use((config) => {
   const token = getDeveloperToken();
   const nextConfig = { ...config };
@@ -56,10 +91,26 @@ developerApiClient.interceptors.request.use((config) => {
 
 // ======================== AUTH SERVICE ========================
 export const authService = {
-  signup: (data) => apiClient.post('/auth/signup/', data),
-  login: (data) => apiClient.post('/auth/login/', data),
+  signup: async (data) => {
+    const response = await apiClient.post('/auth/signup/', data);
+    setAuthToken(response?.data?.auth_token || '');
+    return response;
+  },
+  login: async (data) => {
+    const response = await apiClient.post('/auth/login/', data);
+    setAuthToken(response?.data?.auth_token || '');
+    return response;
+  },
   me: () => apiClient.get('/auth/me/'),
-  logout: () => apiClient.post('/auth/logout/'),
+  logout: async () => {
+    try {
+      return await apiClient.post('/auth/logout/');
+    } finally {
+      clearAuthToken();
+    }
+  },
+  clearToken: clearAuthToken,
+  hasToken: () => Boolean(getAuthToken()),
 };
 
 export const developerAuthService = {
@@ -74,6 +125,7 @@ export const developerAuthService = {
     return Promise.resolve({ data: { message: 'Developer logout successful' } });
   },
   clearToken: clearDeveloperToken,
+  hasToken: () => Boolean(getDeveloperToken()),
 };
 
 // ======================== USER SERVICE ========================
@@ -103,6 +155,7 @@ export const userService = {
 
 // ======================== ADMIN SERVICE ========================
 export const adminService = {
+  getDashboardSummary: () => apiClient.get('/admin/dashboard-summary/'),
   getAll: (params = {}) => apiClient.get('/admins/', { params }),
   getById: (id) => apiClient.get(`/admins/${id}/`),
   create: (data) => apiClient.post('/admins/', data),

@@ -22,6 +22,7 @@ urlpatterns = [
     path('auth/me/', views.auth_me, name='auth-me'),
     path('auth/logout/', views.auth_logout, name='auth-logout'),
     path('auth/admin/change-password/', views.admin_change_password, name='admin-change-password'),
+    path('admin/dashboard-summary/', views.admin_dashboard_summary, name='admin-dashboard-summary'),
     path('user/dashboard-data/', views.user_dashboard_data, name='user-dashboard-data'),
     path('user/subscribe/', views.user_subscribe, name='user-subscribe'),
     path('user/subscription-basket/', views.user_subscription_basket, name='user-subscription-basket'),

@@ -304,10 +304,19 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true);
 
   const refreshAuthUser = async () => {
-    const response = isDeveloperApp()
-      ? await developerAuthService.me()
-      : await authService.me();
-    setAuthUser(response.data.user || null);
+    try {
+      const response = isDeveloperApp()
+        ? await developerAuthService.me()
+        : await authService.me();
+      setAuthUser(response.data.user || null);
+    } catch (error) {
+      if (isDeveloperApp()) {
+        developerAuthService.clearToken();
+      } else {
+        authService.clearToken();
+      }
+      throw error;
+    }
   };
 
   useEffect(() => {
@@ -332,6 +341,15 @@ function App() {
               window.history.replaceState(null, '', '/');
             }
           }
+        }
+
+        if (developerApp && !developerAuthService.hasToken()) {
+          setAuthUser(null);
+          return;
+        }
+        if (!developerApp && !authService.hasToken()) {
+          setAuthUser(null);
+          return;
         }
 
         await refreshAuthUser();

@@ -41,9 +41,14 @@ from .serializers import (
 
 logger = logging.getLogger(__name__)
 DEVELOPER_TOKEN_HEADER = 'HTTP_X_DEVELOPER_TOKEN'
+AUTH_TOKEN_HEADER = 'HTTP_X_AUTH_TOKEN'
 
 
 def _resolve_admin_for_request(request):
+    token_admin = _resolve_admin_from_token(request)
+    if token_admin:
+        return token_admin
+
     session_obj = getattr(request, "session", None)
     if session_obj is None and hasattr(request, "_request"):
         session_obj = getattr(request._request, "session", None)
@@ -56,6 +61,47 @@ def _resolve_admin_for_request(request):
         return None
 
     return Admin.objects.filter(admin_id=auth_user_id, is_active=True).first()
+
+
+def _auth_signer():
+    return TimestampSigner(salt='milkman-auth')
+
+
+def _auth_token_max_age():
+    return max(300, int(getattr(settings, 'AUTH_TOKEN_MAX_AGE_SECONDS', 60 * 60 * 24 * 7)))
+
+
+def _issue_auth_token(role, user_id):
+    return _auth_signer().sign(f"{role}:{user_id}")
+
+
+def _unsign_auth_token(request):
+    token = request.META.get(AUTH_TOKEN_HEADER)
+    if not token:
+        return None, None
+    try:
+        raw_value = _auth_signer().unsign(token, max_age=_auth_token_max_age())
+    except (BadSignature, SignatureExpired):
+        return None, None
+    try:
+        role, raw_user_id = raw_value.split(':', 1)
+        return role, int(raw_user_id)
+    except (ValueError, TypeError):
+        return None, None
+
+
+def _resolve_admin_from_token(request):
+    role, user_id = _unsign_auth_token(request)
+    if role != 'admin' or not user_id:
+        return None
+    return Admin.objects.filter(admin_id=user_id, is_active=True).first()
+
+
+def _resolve_customer_from_token(request):
+    role, user_id = _unsign_auth_token(request)
+    if role != 'user' or not user_id:
+        return None
+    return Customer.objects.filter(customer_id=user_id).first()
 
 
 def _client_ip(request):
@@ -787,6 +833,22 @@ def _persist_auth_session(request, role, user_id):
         return False
 
 
+def _auth_success_payload(role, user_obj, session_persisted=False):
+    if role == "admin":
+        return {
+            "message": "Login successful",
+            "user": _admin_payload(user_obj),
+            "session_persisted": session_persisted,
+            "auth_token": _issue_auth_token("admin", user_obj.admin_id),
+        }
+    return {
+        "message": "Login successful",
+        "user": _customer_payload(user_obj),
+        "session_persisted": session_persisted,
+        "auth_token": _issue_auth_token("user", user_obj.customer_id),
+    }
+
+
 @api_view(['POST'])
 def auth_signup(request):
     role = request.data.get("role", "user")
@@ -877,10 +939,9 @@ def auth_signup(request):
     serializer.is_valid(raise_exception=True)
     customer = serializer.save()
     session_persisted = _persist_auth_session(request, "user", customer.customer_id)
-    return Response(
-        {"message": "Signup successful", "user": _customer_payload(customer), "session_persisted": session_persisted},
-        status=status.HTTP_201_CREATED
-    )
+    response_data = _auth_success_payload("user", customer, session_persisted=session_persisted)
+    response_data["message"] = "Signup successful"
+    return Response(response_data, status=status.HTTP_201_CREATED)
 
 
 @api_view(['POST'])
@@ -910,7 +971,7 @@ def auth_login(request):
                     status=status.HTTP_403_FORBIDDEN,
                 )
             session_persisted = _persist_auth_session(request, "admin", admin.admin_id)
-            return Response({"message": "Login successful", "user": _admin_payload(admin), "session_persisted": session_persisted})
+            return Response(_auth_success_payload("admin", admin, session_persisted=session_persisted))
         _record_admin_login_failure(admin)
 
     customer = Customer.objects.filter(Q(email__iexact=identifier) | Q(username__iexact=identifier)).first()
@@ -920,7 +981,7 @@ def auth_login(request):
             customer = Customer.objects.filter(Q(phone=normalized_phone) | Q(phone__endswith=normalized_phone)).first()
     if customer and customer.status == "active" and customer.check_password(password):
         session_persisted = _persist_auth_session(request, "user", customer.customer_id)
-        return Response({"message": "Login successful", "user": _customer_payload(customer), "session_persisted": session_persisted})
+        return Response(_auth_success_payload("user", customer, session_persisted=session_persisted))
 
     return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
 
@@ -966,21 +1027,18 @@ def developer_auth_me(request):
 
 @api_view(['GET'])
 def auth_me(request):
+    admin = _resolve_admin_for_request(request)
+    if admin:
+        return Response({"user": _admin_payload(admin)})
+
+    customer = _resolve_authenticated_customer(request)
+    if customer:
+        return Response({"user": _customer_payload(customer)})
+
     auth_role = request.session.get("auth_role")
     auth_user_id = request.session.get("auth_user_id")
-
     if not auth_role or not auth_user_id:
         return Response({"user": None})
-
-    if auth_role == "admin":
-        admin = Admin.objects.filter(admin_id=auth_user_id, is_active=True).first()
-        if not admin:
-            try:
-                request.session.flush()
-            except Exception:
-                pass
-            return Response({"user": None})
-        return Response({"user": _admin_payload(admin)})
 
     customer = Customer.objects.filter(customer_id=auth_user_id).first()
     if not customer:
@@ -1019,7 +1077,37 @@ def admin_change_password(request):
     return Response({"message": "Password changed successfully", "user": _admin_payload(admin)})
 
 
+@api_view(['GET'])
+def admin_dashboard_summary(request):
+    admin = _resolve_admin_for_request(request)
+    if not admin:
+        return Response({"error": "Admin authentication required"}, status=status.HTTP_403_FORBIDDEN)
+
+    if admin.role == "super_admin":
+        data = {
+            "admins": Admin.objects.filter(is_active=True).count(),
+            "categories": Category.objects.count(),
+            "subscriptions": Subscription.objects.count(),
+            "customers": Customer.objects.count(),
+            "products": Product.objects.exclude(status='discontinued').count(),
+        }
+    else:
+        data = {
+            "admins": 1,
+            "categories": Category.objects.filter(owner_admin=admin).count(),
+            "subscriptions": Subscription.objects.filter(owner_admin=admin).count(),
+            "customers": Customer.objects.filter(owner_admin=admin).count(),
+            "products": Product.objects.filter(created_by=admin).exclude(status='discontinued').count(),
+        }
+
+    return Response(data)
+
+
 def _resolve_customer_for_user_request(request):
+    token_customer = _resolve_customer_from_token(request)
+    if token_customer:
+        return token_customer
+
     session_obj = getattr(request, "session", None)
     if session_obj is None and hasattr(request, "_request"):
         session_obj = getattr(request._request, "session", None)
@@ -1038,6 +1126,10 @@ def _resolve_customer_for_user_request(request):
 
 
 def _resolve_authenticated_customer(request):
+    token_customer = _resolve_customer_from_token(request)
+    if token_customer:
+        return token_customer
+
     session_obj = getattr(request, "session", None)
     if session_obj is None and hasattr(request, "_request"):
         session_obj = getattr(request._request, "session", None)
