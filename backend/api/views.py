@@ -908,7 +908,13 @@ def auth_signup(request):
             f"Notes: {application.notes or ''}\n"
             f"Status: {application.status}\n"
         )
-        _send_email_safe(f"[MilkMan] Admin application #{application.application_id}", body, dev_emails)
+        # Developer notification should not block application submission.
+        _send_email_safe(
+            f"[MilkMan] Admin application #{application.application_id}",
+            body,
+            dev_emails,
+            fail_silently=True,
+        )
 
         return Response(
             {
